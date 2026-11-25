@@ -1,0 +1,414 @@
+#include <rclcpp/rclcpp.hpp>
+#include <rclcpp/serialization.hpp>
+#include <rosbag2_cpp/writer.hpp>
+#include <rosbag2_storage/serialized_bag_message.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
+#include <tf2_msgs/msg/tf_message.hpp>
+#include <yaml-cpp/yaml.h>
+#include <atomic>
+#include <cmath>
+#include <iostream>
+#include <condition_variable>
+#include <deque>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <set>
+#include <thread>
+
+using Ns = int64_t;
+static Ns steady_now() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+struct Message {
+  uint64_t seq{};
+  Ns steady{}, ros{};
+  std::string topic, type;
+  std::shared_ptr<rclcpp::SerializedMessage> data;
+  bool context{};
+  size_t bytes() const { return data ? data->capacity() + 256 : 256; }
+};
+struct Input {
+  enum Kind { DATA, TRIGGER, TICK, STOP } kind;
+  Message msg;
+  std::string id, reason;
+};
+struct Event {
+  std::string id;
+  Ns start{}, end{}, limit{};
+  size_t trigger_bytes{};
+  YAML::Node meta;
+  std::set<std::string> errors;
+};
+struct Job {
+  enum Kind { OPEN, WRITE, CLOSE } kind;
+  std::string id;
+  Message msg;
+  YAML::Node meta;
+};
+class Recorder : public rclcpp::Node {
+ public:
+  Recorder() : Node("event_recorder") {
+    auto seconds = [this](const char * name, double value) {
+      double v = declare_parameter<double>(name, value);
+      if (!std::isfinite(v) || v <= 0 || v > 86400) throw std::runtime_error(name);
+      return static_cast<Ns>(v * 1e9);
+    };
+    pre_ = seconds("pre_trigger_seconds", 5); post_ = seconds("post_trigger_seconds", 10);
+    retention_ = seconds("history_retention_seconds", 8);
+    maximum_ = seconds("max_event_seconds", 300); dedup_ = seconds("dedup_seconds", 60);
+    if (retention_ < pre_ || maximum_ < pre_ + post_) throw std::runtime_error("invalid window limits");
+    auto budget = [this](const char * name, int64_t value) {
+      auto v = declare_parameter<int64_t>(name, value);
+      if (v <= 0) throw std::runtime_error(name);
+      return static_cast<size_t>(v);
+    };
+    history_limit_ = budget("history_bytes", 268435456);
+    input_limit_ = budget("input_bytes", 67108864);
+    writer_limit_ = budget("writer_bytes", 536870912);
+    context_limit_ = budget("context_bytes", 16777216);
+    items_ = budget("queue_items", 100000);
+    pending_limit_ = budget("max_pending_events", 8);
+    free_limit_ = budget("minimum_free_bytes", 1073741824);
+    output_ = declare_parameter<std::string>("output_directory", "event_bags");
+    storage_ = declare_parameter<std::string>("storage_id", "sqlite3");
+    std::filesystem::create_directories(output_);
+    auto topics = declare_parameter<std::vector<std::string>>("topics", {"/imu/data"});
+    auto types = declare_parameter<std::vector<std::string>>("types", {"sensor_msgs/msg/Imu"});
+    auto rel = declare_parameter<std::vector<std::string>>("reliability", std::vector<std::string>{});
+    auto dur = declare_parameter<std::vector<std::string>>("durability", std::vector<std::string>{});
+    auto ct = declare_parameter<std::vector<std::string>>("context_topics", std::vector<std::string>{});
+    auto cy = declare_parameter<std::vector<std::string>>("context_types", std::vector<std::string>{});
+    if (topics.size() != types.size() || ct.size() != cy.size() ||
+        (!rel.empty() && rel.size() != topics.size()) ||
+        (!dur.empty() && dur.size() != topics.size())) throw std::runtime_error("topic configuration lengths differ");
+    for (size_t i = 0; i < topics.size(); ++i)
+      subscribe(topics[i], types[i], false, rel.empty() ? "best_effort" : rel[i], dur.empty() ? "volatile" : dur[i]);
+    for (size_t i = 0; i < ct.size(); ++i) subscribe(ct[i], cy[i], true, "reliable", "transient_local");
+    trigger_ = create_subscription<std_msgs::msg::String>("~/trigger", 100,
+      [this](std_msgs::msg::String::ConstSharedPtr m) {
+        // Wire format: id|reason; a plain string is an anonymous reason.
+        auto p = m->data.find('|');
+        enqueue(Input::TRIGGER, {}, p == std::string::npos ? "" : m->data.substr(0, p),
+          p == std::string::npos ? m->data : m->data.substr(p + 1));
+      });
+    service_ = create_service<std_srvs::srv::Trigger>("~/trigger",
+      [this](std::shared_ptr<std_srvs::srv::Trigger::Request>, std::shared_ptr<std_srvs::srv::Trigger::Response> r) {
+        r->success = enqueue(Input::TRIGGER, {}, "", "service");
+        r->message = r->success ? "queued; see event metadata for outcome" : "input queue full";
+      });
+    timer_ = create_wall_timer(std::chrono::milliseconds(20), [this] {enqueue(Input::TICK);});
+    started_ = steady_now();
+    run_id_ = "event_" + std::to_string(now().nanoseconds()) + "_" + std::to_string(started_);
+    writer_ = std::thread([this] {write_loop();});
+    manager_ = std::thread([this] {manage_loop();});
+    RCLCPP_INFO(get_logger(), "Ready: %s, trigger ~/trigger, pre %.1fs post %.1fs",
+      storage_.c_str(), pre_/1e9, post_/1e9);
+  }
+  ~Recorder() override { stop(); }
+  void stop() {
+    { std::lock_guard<std::mutex> lock(input_mutex_);
+      if (stopped_) return;
+      stopped_ = true;
+      Input in{Input::STOP, {}, "", ""}; in.msg.steady = steady_now(); input_.push_back(in);
+    }
+    input_cv_.notify_one();
+    if (manager_.joinable()) manager_.join();
+    { std::lock_guard<std::mutex> lock(write_mutex_); writer_stop_ = true; }
+    write_cv_.notify_one();
+    if (writer_.joinable()) writer_.join();
+  }
+ private:
+  void subscribe(const std::string & topic, const std::string & type, bool context,
+                 const std::string & reliability, const std::string & durability) {
+    if (topic.empty() || topic[0] != '/' || metadata_.count(topic)) throw std::runtime_error("duplicate or non-absolute topic");
+    rclcpp::QoS qos(100);
+    if (reliability == "reliable") qos.reliable();
+    else if (reliability == "best_effort") qos.best_effort();
+    else throw std::runtime_error("invalid reliability");
+    if (durability == "transient_local") qos.transient_local();
+    else if (durability != "volatile") throw std::runtime_error("invalid durability");
+    rosbag2_storage::TopicMetadata tm;
+    tm.name = topic; tm.type = type; tm.serialization_format = "cdr";
+    // rosbag2 uses these profiles when choosing playback publisher QoS.
+    YAML::Node profile;
+    profile["history"] = 1; profile["depth"] = 100;
+    profile["reliability"] = reliability == "reliable" ? 1 : 2;
+    profile["durability"] = durability == "transient_local" ? 1 : 2;
+    for (const auto * key : {"deadline", "lifespan", "liveliness_lease_duration"}) {
+      profile[key]["sec"] = 9223372036LL; profile[key]["nsec"] = 854775807;
+    }
+    profile["liveliness"] = 1; profile["avoid_ros_namespace_conventions"] = false;
+    YAML::Node profiles; profiles.push_back(profile); tm.offered_qos_profiles = YAML::Dump(profiles);
+    metadata_[topic] = tm;
+    subscriptions_.push_back(create_generic_subscription(topic, type, qos,
+      [this, topic, type, context](std::shared_ptr<rclcpp::SerializedMessage> data) {
+        Message m; m.topic = topic; m.type = type; m.data = data; m.context = context;
+        enqueue(Input::DATA, m);
+      }));
+  }
+  bool enqueue(Input::Kind kind, Message m = {}, std::string id = "", std::string reason = "") {
+    std::lock_guard<std::mutex> lock(input_mutex_);
+    if (stopped_) return false;
+    m.steady = steady_now(); m.ros = now().nanoseconds(); m.seq = ++sequence_;
+    size_t bytes = m.bytes() + id.size() + reason.size();
+    if (input_.size() >= items_ || input_bytes_ + bytes > input_limit_) {
+      if (kind == Input::DATA) { last_input_drop_ = m.steady; ++input_drops_; }
+      if (kind == Input::TRIGGER) {
+        ++trigger_drops_; RCLCPP_ERROR(get_logger(), "Trigger rejected: input queue full");
+      }
+      return false;
+    }
+    input_bytes_ += bytes;
+    input_.push_back({kind, m, std::move(id), std::move(reason)}); input_cv_.notify_one(); return true;
+  }
+  bool job(Job j) {
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    if (j.kind == Job::WRITE) {
+      if (write_bytes_ + j.msg.bytes() > writer_limit_ || write_data_items_ >= items_) return false;
+      write_bytes_ += j.msg.bytes(); ++write_data_items_;
+    }
+    jobs_.push_back(std::move(j)); write_cv_.notify_one(); return true;
+  }
+  void send(const Message & m, bool context = false) {
+    Message copy = m; copy.context = context;
+    if (!job({Job::WRITE, active_->id, copy, {}})) {
+      active_->errors.insert("writer_queue_overflow");
+      auto n = active_->meta["writer_dropped_messages"];
+      active_->meta["writer_dropped_messages"] = n ? n.as<uint64_t>() + 1 : 1;
+    }
+  }
+  void context_store(const Message & m) {
+    auto store = [this](const std::string & key, Message value) {
+      auto it = context_.find(key);
+      if (it != context_.end()) {context_bytes_ -= it->second.bytes(); context_.erase(it);}
+      if (context_bytes_ + value.bytes() > context_limit_ || context_.size() >= items_) {
+        context_lost_ = true; return;
+      }
+      context_bytes_ += value.bytes(); context_[key] = std::move(value);
+    };
+    if (m.type == "tf2_msgs/msg/TFMessage") {
+      tf2_msgs::msg::TFMessage tf;
+      rclcpp::Serialization<tf2_msgs::msg::TFMessage> serializer;
+      serializer.deserialize_message(m.data.get(), &tf);
+      for (auto & transform : tf.transforms) {
+        tf2_msgs::msg::TFMessage one; one.transforms.push_back(transform);
+        Message copy = m; copy.data = std::make_shared<rclcpp::SerializedMessage>();
+        serializer.serialize_message(&one, copy.data.get());
+        store(m.topic + "/" + transform.child_frame_id, copy);
+      }
+    } else store(m.topic, m);
+  }
+  void prune(Ns t) {
+    while (!history_.empty() && (history_.front().steady < t - retention_ ||
+           history_bytes_ > history_limit_ || history_.size() > items_)) {
+      const auto & m = history_.front();
+      if (m.steady >= t - retention_) last_history_drop_ = m.steady;
+      if (m.context) context_store(m); // baseline immediately before retained history
+      history_bytes_ -= m.bytes(); history_.pop_front();
+    }
+  }
+  void finish(const std::string & reason = "") {
+    if (!active_) return;
+    if (!reason.empty()) active_->errors.insert(reason);
+    Ns dropped = last_input_drop_.load();
+    if (dropped >= active_->start) active_->errors.insert("input_queue_overflow");
+    active_->meta["input_drops_total"] = input_drops_.load();
+    active_->meta["trigger_rejections_total"] = trigger_drops_.load();
+    active_->meta["window_end_steady_ns"] = active_->end;
+    active_->meta["errors"] = YAML::Node(YAML::NodeType::Sequence);
+    for (const auto & error : active_->errors) active_->meta["errors"].push_back(error);
+    active_->meta["data_complete"] = active_->errors.empty();
+    job({Job::CLOSE, active_->id, {}, YAML::Clone(active_->meta)});
+    active_.reset();
+  }
+  void trigger(const Input & in) {
+    auto t = in.msg.steady;
+    for (auto it = seen_.begin(); it != seen_.end();) {
+      if (it->second < t - dedup_) { seen_bytes_ -= it->first.size() + 64; it = seen_.erase(it); } else ++it;
+    }
+    if (!in.id.empty()) {
+      if (seen_.count(in.id)) return;
+      if (seen_.size() >= items_ || seen_bytes_ + in.id.size() + 64 > input_limit_) {
+        ++trigger_drops_; RCLCPP_ERROR(get_logger(), "Trigger rejected: dedup capacity"); return;
+      }
+      seen_[in.id] = t; seen_bytes_ += in.id.size() + 64;
+    }
+    if (active_ && (active_->trigger_bytes + in.id.size() + in.reason.size() + 256 > input_limit_ ||
+        active_->meta["triggers"].size() >= items_)) {
+      ++trigger_drops_; RCLCPP_ERROR(get_logger(), "Trigger rejected: event metadata capacity"); return;
+    }
+    if (!active_) {
+      if (pending_.load() >= pending_limit_) {
+        ++trigger_drops_; RCLCPP_ERROR(get_logger(), "Trigger rejected: pending event limit"); return;
+      }
+      ++pending_;
+      active_ = std::make_unique<Event>();
+      active_->id = run_id_ + "_" + std::to_string(++events_);
+      active_->start = t - pre_; active_->limit = active_->start + maximum_;
+      auto & meta = active_->meta;
+      meta["config_version"] = 1;
+      meta["event_id"] = active_->id; meta["software_version"] = "0.1.0";
+      meta["time_basis"] = "receive_steady"; meta["bag_timestamp_basis"] = "receive_ros";
+      meta["window_start_steady_ns"] = active_->start;
+      meta["pre_trigger_seconds"] = pre_/1e9; meta["post_trigger_seconds"] = post_/1e9;
+      meta["history_retention_seconds"] = retention_/1e9;
+      meta["max_event_seconds"] = maximum_/1e9; meta["storage_id"] = storage_;
+      meta["history_bytes"] = history_limit_; meta["input_bytes"] = input_limit_;
+      meta["writer_bytes"] = writer_limit_; meta["context_bytes"] = context_limit_;
+      meta["minimum_free_bytes"] = free_limit_; meta["queue_items"] = items_;
+      meta["max_pending_events"] = pending_limit_; meta["dedup_seconds"] = dedup_/1e9;
+      for (const auto & pair : metadata_) {
+        meta["topics"][pair.first]["type"] = pair.second.type;
+        meta["topics"][pair.first]["qos"] = YAML::Load(pair.second.offered_qos_profiles);
+      }
+      bool enough = started_ <= active_->start && last_history_drop_ < active_->start;
+      meta["prehistory_available"] = enough;
+      if (!enough) active_->errors.insert("insufficient_prehistory");
+      if (context_lost_) active_->errors.insert("context_cache_overflow");
+      job({Job::OPEN, active_->id, {}, {}});
+      // Build context as of window start, then replay updates in the strict window.
+      auto saved = context_; auto saved_bytes = context_bytes_;
+      for (const auto & m : history_) if (m.context && m.steady < active_->start) context_store(m);
+      for (const auto & pair : context_) send(pair.second, true);
+      context_ = std::move(saved); context_bytes_ = saved_bytes;
+      if (context_lost_) active_->errors.insert("context_cache_overflow");
+      for (const auto & m : history_) if (m.steady >= active_->start) send(m);
+      RCLCPP_INFO(get_logger(), "CAPTURING %s", active_->id.c_str());
+    }
+    active_->end = std::min(t + post_, active_->limit);
+    if (t + post_ > active_->limit) active_->errors.insert("max_event_duration_truncated");
+    YAML::Node tr; tr["id"] = in.id; tr["reason"] = in.reason;
+    tr["receive_steady_ns"] = t; tr["receive_ros_ns"] = in.msg.ros;
+    active_->trigger_bytes += in.id.size() + in.reason.size() + 256;
+    active_->meta["triggers"].push_back(tr);
+  }
+  void manage_loop() {
+    for (;;) {
+      Input in;
+      { std::unique_lock<std::mutex> lock(input_mutex_);
+        input_cv_.wait(lock, [this] {return !input_.empty();});
+        in = std::move(input_.front()); input_.pop_front();
+        if (in.kind != Input::STOP) input_bytes_ -= in.msg.bytes() + in.id.size() + in.reason.size();
+      }
+      try {
+        if (active_ && in.msg.steady > active_->end) finish();
+        if (in.kind == Input::STOP) {finish("shutdown_truncated"); break;}
+        prune(in.msg.steady);
+        if (last_steady_ && std::abs((in.msg.ros - last_ros_) - (in.msg.steady - last_steady_)) > 100000000) {
+          if (active_) active_->errors.insert("ros_clock_jump");
+          last_jump_ = in.msg.steady;
+        }
+        last_steady_ = in.msg.steady; last_ros_ = in.msg.ros;
+        if (in.kind == Input::DATA) {
+          if (active_) send(in.msg);
+          history_.push_back(in.msg); history_bytes_ += in.msg.bytes(); prune(in.msg.steady);
+        } else if (in.kind == Input::TRIGGER) trigger(in);
+        if (active_ && last_jump_ >= active_->start) active_->errors.insert("ros_clock_jump");
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR(get_logger(), "Manager: %s", e.what()); finish("manager_error");
+      }
+    }
+  }
+  void save_meta(const std::string & id, const YAML::Node & meta) {
+    auto path = std::filesystem::path(output_) / (id + ".event.yaml");
+    std::ofstream out(path.string() + ".tmp");
+    out.exceptions(std::ios::badbit | std::ios::failbit); out << meta; out.close();
+    std::filesystem::rename(path.string() + ".tmp", path);
+  }
+  void write_loop() {
+    std::unique_ptr<rosbag2_cpp::Writer> writer;
+    YAML::Node stats;
+    std::string error;
+    for (;;) {
+      Job j;
+      { std::unique_lock<std::mutex> lock(write_mutex_);
+        write_cv_.wait(lock, [this] {return writer_stop_ || !jobs_.empty();});
+        if (jobs_.empty()) break;
+        j = std::move(jobs_.front()); jobs_.pop_front();
+        if (j.kind == Job::WRITE) {write_bytes_ -= j.msg.bytes(); --write_data_items_;}
+      }
+      try {
+        if (j.kind == Job::OPEN) {
+          stats = YAML::Node(); error.clear();
+          YAML::Node initial; initial["event_id"] = j.id; initial["status"] = "CAPTURING";
+          save_meta(j.id, initial);
+          if (std::filesystem::space(output_).available < free_limit_) throw std::runtime_error("minimum free disk space violated");
+          writer = std::make_unique<rosbag2_cpp::Writer>();
+          rosbag2_storage::StorageOptions options;
+          options.uri = (std::filesystem::path(output_) / j.id).string(); options.storage_id = storage_;
+          options.max_cache_size = 0;
+          writer->open(options, {"cdr", "cdr"});
+          for (const auto & pair : metadata_) writer->create_topic(pair.second);
+        } else if (j.kind == Job::WRITE && error.empty()) {
+          if (std::filesystem::space(output_).available < free_limit_) throw std::runtime_error("minimum free disk space violated");
+          auto bag = std::make_shared<rosbag2_storage::SerializedBagMessage>();
+          // Alias payload ownership: Writer must not consume the ring's SerializedMessage.
+          bag->serialized_data = std::shared_ptr<rcutils_uint8_array_t>(j.msg.data,
+            &j.msg.data->get_rcl_serialized_message());
+          bag->topic_name = j.msg.topic; bag->time_stamp = j.msg.ros;
+          writer->write(bag);
+          auto topic = stats[j.msg.topic];
+          topic["message_count"] = topic["message_count"] ? topic["message_count"].as<uint64_t>() + 1 : 1;
+          if (j.msg.context) {
+            YAML::Node ctx; ctx["sequence_id"] = j.msg.seq;
+            ctx["original_receive_ros_ns"] = j.msg.ros; ctx["original_receive_steady_ns"] = j.msg.steady;
+            ctx["injection"] = "original_timestamp_before_window";
+            topic["context"].push_back(ctx);
+          } else {
+            if (!topic["first_receive_steady_ns"]) {
+              topic["first_receive_steady_ns"] = j.msg.steady; topic["first_sequence_id"] = j.msg.seq;
+            }
+            topic["last_receive_steady_ns"] = j.msg.steady; topic["last_sequence_id"] = j.msg.seq;
+          }
+        }
+      } catch (const std::exception & e) {
+        error = e.what(); RCLCPP_ERROR(get_logger(), "Writer %s: %s", j.id.c_str(), e.what());
+      }
+      if (j.kind == Job::CLOSE) {
+        try {if (writer) writer->close();}
+        catch (const std::exception & e) {error = e.what();}
+        writer.reset();
+        j.meta["written_topics"] = stats;
+        if (!error.empty()) {j.meta["errors"].push_back(error); j.meta["data_complete"] = false;}
+        j.meta["status"] = !error.empty() ? "FAILED" : j.meta["data_complete"].as<bool>() ? "COMPLETED" : "PARTIAL";
+        try {save_meta(j.id, j.meta);}
+        catch (const std::exception & e) {RCLCPP_ERROR(get_logger(), "Metadata save failed: %s", e.what());}
+        RCLCPP_INFO(get_logger(), "%s %s", j.meta["status"].as<std::string>().c_str(), j.id.c_str());
+        --pending_;
+      }
+    }
+  }
+  Ns pre_, post_, retention_, maximum_, dedup_, started_{}, last_history_drop_{}, last_jump_{};
+  Ns last_steady_{}, last_ros_{};
+  size_t history_limit_, input_limit_, writer_limit_, context_limit_, items_, pending_limit_, free_limit_;
+  size_t seen_bytes_{}, input_bytes_{}, history_bytes_{}, write_bytes_{}, context_bytes_{}, write_data_items_{};
+  uint64_t sequence_{}, events_{};
+  std::atomic<Ns> last_input_drop_{0};
+  std::atomic<uint64_t> input_drops_{0}, trigger_drops_{0};
+  std::atomic<size_t> pending_{0};
+  bool stopped_{}, writer_stop_{}, context_lost_{};
+  std::string output_, storage_, run_id_;
+  std::mutex input_mutex_, write_mutex_;
+  std::condition_variable input_cv_, write_cv_;
+  std::deque<Input> input_;
+  std::deque<Message> history_;
+  std::deque<Job> jobs_;
+  std::map<std::string, Message> context_;
+  std::map<std::string, Ns> seen_;
+  std::map<std::string, rosbag2_storage::TopicMetadata> metadata_;
+  std::unique_ptr<Event> active_;
+  std::thread manager_, writer_;
+  std::vector<rclcpp::GenericSubscription::SharedPtr> subscriptions_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trigger_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
+  rclcpp::TimerBase::SharedPtr timer_;
+};
+int main(int argc, char ** argv) {
+  rclcpp::init(argc, argv);
+  try { auto node = std::make_shared<Recorder>(); rclcpp::spin(node); node->stop(); }
+  catch (const std::exception & e) {std::cerr << e.what() << '\n'; rclcpp::shutdown(); return 1;}
+  rclcpp::shutdown(); return 0;
+}

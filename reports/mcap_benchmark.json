@@ -1,0 +1,70 @@
+[
+  {
+    "scenario": "imu_200hz",
+    "storage": "mcap",
+    "phases": {
+      "idle": {
+        "mean_cpu_percent_one_core": 1.151982520918834,
+        "p95_cpu_percent_one_core": 4.992159040427486,
+        "peak_rss_mib": 23.6796875
+      },
+      "buffering": {
+        "mean_cpu_percent_one_core": 4.21365503191886,
+        "p95_cpu_percent_one_core": 9.968934705985209,
+        "peak_rss_mib": 24.4296875
+      },
+      "recording": {
+        "mean_cpu_percent_one_core": 6.813698934120316,
+        "p95_cpu_percent_one_core": 9.988424963702835,
+        "peak_rss_mib": 30.97265625
+      }
+    },
+    "recorded_messages_per_second": 202.6,
+    "event_status": "COMPLETED",
+    "written_topics": {
+      "/lidar_imu": {
+        "message_count": 3039,
+        "first_receive_steady_ns": 4107170842911,
+        "first_sequence_id": 1133,
+        "last_receive_steady_ns": 4122164947142,
+        "last_sequence_id": 4922
+      }
+    },
+    "bag_bytes": 1138530,
+    "published_images": 0
+  },
+  {
+    "scenario": "image_20mib_s",
+    "storage": "mcap",
+    "phases": {
+      "idle": {
+        "mean_cpu_percent_one_core": 0.6239376175081206,
+        "p95_cpu_percent_one_core": 4.990169864368549,
+        "peak_rss_mib": 23.94921875
+      },
+      "buffering": {
+        "mean_cpu_percent_one_core": 3.2157115984071103,
+        "p95_cpu_percent_one_core": 9.972223915984584,
+        "peak_rss_mib": 188.3828125
+      },
+      "recording": {
+        "mean_cpu_percent_one_core": 4.990436770024828,
+        "p95_cpu_percent_one_core": 9.986018924397749,
+        "peak_rss_mib": 191.2578125
+      }
+    },
+    "recorded_messages_per_second": 20.0,
+    "event_status": "COMPLETED",
+    "written_topics": {
+      "/benchmark/image": {
+        "message_count": 300,
+        "first_receive_steady_ns": 4130654650021,
+        "first_sequence_id": 460,
+        "last_receive_steady_ns": 4145637282982,
+        "last_sequence_id": 1510
+      }
+    },
+    "bag_bytes": 314655460,
+    "published_images": 388
+  }
+]

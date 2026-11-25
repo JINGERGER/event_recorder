@@ -1,0 +1,70 @@
+[
+  {
+    "scenario": "imu_200hz",
+    "storage": "sqlite3",
+    "phases": {
+      "idle": {
+        "mean_cpu_percent_one_core": 0.7681647736030823,
+        "p95_cpu_percent_one_core": 4.993023074109091,
+        "peak_rss_mib": 23.58203125
+      },
+      "buffering": {
+        "mean_cpu_percent_one_core": 4.21482766321729,
+        "p95_cpu_percent_one_core": 9.984621336759966,
+        "peak_rss_mib": 24.83203125
+      },
+      "recording": {
+        "mean_cpu_percent_one_core": 8.829396912436636,
+        "p95_cpu_percent_one_core": 14.978136862981787,
+        "peak_rss_mib": 31.95703125
+      }
+    },
+    "recorded_messages_per_second": 202.6,
+    "event_status": "COMPLETED",
+    "written_topics": {
+      "/lidar_imu": {
+        "message_count": 3039,
+        "first_receive_steady_ns": 4060475276275,
+        "first_sequence_id": 1128,
+        "last_receive_steady_ns": 4075465818118,
+        "last_sequence_id": 4916
+      }
+    },
+    "bag_bytes": 1218036,
+    "published_images": 0
+  },
+  {
+    "scenario": "image_20mib_s",
+    "storage": "sqlite3",
+    "phases": {
+      "idle": {
+        "mean_cpu_percent_one_core": 0.9356862210108126,
+        "p95_cpu_percent_one_core": 4.99141155267247,
+        "peak_rss_mib": 23.72265625
+      },
+      "buffering": {
+        "mean_cpu_percent_one_core": 3.54824965884858,
+        "p95_cpu_percent_one_core": 9.982550003461318,
+        "peak_rss_mib": 188.18359375
+      },
+      "recording": {
+        "mean_cpu_percent_one_core": 7.677280865276353,
+        "p95_cpu_percent_one_core": 9.989694680926139,
+        "peak_rss_mib": 194.16015625
+      }
+    },
+    "recorded_messages_per_second": 20.0,
+    "event_status": "COMPLETED",
+    "written_topics": {
+      "/benchmark/image": {
+        "message_count": 300,
+        "first_receive_steady_ns": 4083953262257,
+        "first_sequence_id": 460,
+        "last_receive_steady_ns": 4098947248399,
+        "last_sequence_id": 1510
+      }
+    },
+    "bag_bytes": 315016697,
+    "published_images": 388
+  }
+]

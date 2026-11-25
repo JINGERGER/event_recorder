@@ -1,0 +1,78 @@
+[
+  {
+    "scenario": "default_5s_10s",
+    "passed": true,
+    "messages": 2697,
+    "static_frames": [
+      "sensor_a",
+      "sensor_b"
+    ]
+  },
+  {
+    "scenario": "ros2_bag_play_roundtrip",
+    "passed": true,
+    "messages": 2697,
+    "static_frames": [
+      "sensor_a",
+      "sensor_b"
+    ]
+  },
+  {
+    "scenario": "merge_dedup",
+    "passed": true,
+    "messages": 266
+  },
+  {
+    "scenario": "no_followup",
+    "passed": true
+  },
+  {
+    "scenario": "startup",
+    "passed": true
+  },
+  {
+    "scenario": "separate_events",
+    "passed": true,
+    "events": 2
+  },
+  {
+    "scenario": "capacity",
+    "passed": true,
+    "errors": [
+      "insufficient_prehistory",
+      "writer_queue_overflow"
+    ]
+  },
+  {
+    "scenario": "disk_failure",
+    "passed": true,
+    "errors": [
+      "minimum free disk space violated"
+    ]
+  },
+  {
+    "scenario": "shutdown",
+    "passed": true
+  },
+  {
+    "scenario": "maximum_duration",
+    "passed": true
+  },
+  {
+    "scenario": "input_overflow",
+    "passed": true,
+    "input_drops_total": 1
+  },
+  {
+    "scenario": "clock_jump",
+    "passed": true,
+    "steady_post_window_ns": 600000000
+  },
+  {
+    "scenario": "existing_imu_bag",
+    "passed": true,
+    "messages": 3039,
+    "source": "/home/nezha/Documents/rosbag2_2025_07_29-18_14_13",
+    "contiguous_source_slice": true
+  }
+]

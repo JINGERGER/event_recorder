@@ -1,0 +1,22 @@
+event_recorder:
+  ros__parameters:
+    pre_trigger_seconds: 5.0
+    post_trigger_seconds: 10.0
+    history_retention_seconds: 8.0
+    max_event_seconds: 300.0
+    output_directory: event_bags
+    storage_id: mcap  # 需要 ros-humble-rosbag2-storage-mcap；也支持 sqlite3
+    history_bytes: 268435456
+    input_bytes: 67108864
+    writer_bytes: 536870912
+    context_bytes: 16777216
+    queue_items: 100000
+    max_pending_events: 8
+    minimum_free_bytes: 1073741824
+    dedup_seconds: 60.0
+    topics: [/imu/data]
+    types: [sensor_msgs/msg/Imu]
+    reliability: [best_effort]
+    durability: [volatile]
+    context_topics: [/tf_static]
+    context_types: [tf2_msgs/msg/TFMessage]

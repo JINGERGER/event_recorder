@@ -1,0 +1,6 @@
+/build/
+/install/
+/log/
+/event_bags/
+/validation/
+__pycache__/
