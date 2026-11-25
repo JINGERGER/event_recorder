@@ -172,12 +172,13 @@ class Harness:
         self.node.destroy_subscription(sub); self.node.destroy_subscription(tf_sub)
         self.record('ros2_bag_play_roundtrip', {'messages': len(got), 'static_frames': sorted(tf_got)})
 
-        self.start('merge_dedup')
+        self.start('busy_rejection')
         self.wait(0.8, True); self.fire('a|first'); self.wait(0.3, True)
         self.fire('a|duplicate'); self.fire('b|extension'); self.wait(0.8, True)
-        meta = self.finish()[0]; _, seq = self.check(meta, count_triggers=2)
+        meta = self.finish()[0]; _, seq = self.check(meta)
+        assert meta['trigger_rejections_total'] == 2
         assert meta['window_end_steady_ns'] == meta['triggers'][-1]['receive_steady_ns'] + 600_000_000
-        self.record('merge_dedup', {'messages': len(seq)})
+        self.record('busy_rejection', {'messages': len(seq)})
 
         self.start('no_followup')
         self.wait(0.8, True); self.fire('silent|no more messages'); self.wait(0.8)
@@ -190,7 +191,7 @@ class Harness:
         self.record('startup', {})
 
         self.start('separate_events')
-        self.wait(0.8, True); self.fire('one|first'); self.wait(0.7, True)
+        self.wait(0.8, True); self.fire('one|first'); self.wait(3.7, True)
         self.fire('two|second'); self.wait(0.8, True)
         metas = self.finish(2)
         for meta in metas: self.check(meta)
@@ -215,12 +216,12 @@ class Harness:
         self.check(meta, 'PARTIAL'); assert 'shutdown_truncated' in meta['errors']
         self.record('shutdown', {})
 
-        self.start('maximum_duration', extra={'max_event_seconds': 1.2})
+        self.start('no_window_extension', extra={'max_event_seconds': 1.2})
         self.wait(0.8, True); self.fire('one|max'); self.wait(0.3, True)
         self.fire('two|max'); self.wait(0.8, True)
-        meta = self.finish()[0]; self.check(meta, 'PARTIAL', count_triggers=2)
-        assert 'max_event_duration_truncated' in meta['errors']
-        self.record('maximum_duration', {})
+        meta = self.finish()[0]; self.check(meta)
+        assert meta['window_end_steady_ns'] == meta['triggers'][0]['receive_steady_ns'] + 600_000_000
+        self.record('no_window_extension', {})
 
         self.start('input_overflow', extra={'input_bytes': 2048})
         self.wait(0.8, True); self.fire('input|overload')

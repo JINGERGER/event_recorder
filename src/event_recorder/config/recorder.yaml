@@ -14,9 +14,18 @@ event_recorder:
     max_pending_events: 8
     minimum_free_bytes: 1073741824
     dedup_seconds: 60.0
-    topics: [/imu/data]
-    types: [sensor_msgs/msg/Imu]
-    reliability: [best_effort]
-    durability: [volatile]
+    trigger_cooldown_seconds: 3.0
+    topics: [/imu/data, /points_raw]
+    types: [sensor_msgs/msg/Imu, sensor_msgs/msg/PointCloud2]
+    reliability: [best_effort, best_effort]
+    durability: [volatile, volatile]
     context_topics: [/tf_static]
     context_types: [tf2_msgs/msg/TFMessage]
+    # 全部数据 topic 的类型在上方注册；规则只选择需要录制的 topic。
+    trigger_list: [motion, perception]
+    default_trigger: motion  # std_srvs/Trigger 服务使用此规则
+    triggers:
+      motion:
+        topics: [/imu/data, /tf_static]
+      perception:
+        topics: [/points_raw, /tf_static]

@@ -1,5 +1,7 @@
 # 验证结果
 
+> 下方原有记录对应 v0.1。v0.2 已将触发合并改为命名 trigger、忙时拒绝及窗口结束后 3 秒冷却；当前版本结果见本文末尾。
+
 2026-11-25，在本机 Ubuntu 22.04 / ROS 2 Humble 上完成 C++ 构建及真实 DDS/rosbag2 验证。最后一次构建无编译警告，完整验收脚本退出码为 0，13 个场景通过。
 
 原始报告：[report.json](reports/sqlite3_acceptance.json)。该目录保留每个场景的 bag、事件元数据、节点日志及 `ros2 bag info` 输出。
@@ -39,3 +41,19 @@
 原始报告：[MCAP report.json](reports/mcap_acceptance.json)。容量不足场景产生的空 bag 会提示没有 message indices，这是预期的空数据故障测试结果。示例配置现默认使用 MCAP。
 
 另外完成 SQLite3 / MCAP 的 IMU 和 20MiB/s 合成图像负载对比，见 [PERFORMANCE.md](PERFORMANCE.md)。这项短时合成测试不替代生产数据持续负载验证。
+
+## v0.2：Trigger list 与单事件冷却
+
+2026-11-25，构建无编译警告。MCAP 和 SQLite3 各通过 4 组专项验证，MCAP 完整回归 13 个场景通过，所有脚本退出码为 0。
+
+- 两条命名规则分别选择不同 topic，核对 bag 注册的 topic 和实际消息均无混入；静态 TF 仅在选中它的规则中出现。
+- 窗口内相同/不同规则的请求均拒绝，截止时间不延长。
+- 使用默认完整 3 秒冷却，验证冷却期及结束前约 200ms 的请求被拒绝；结束后发送新请求成功，之前被拒绝的请求没有被延迟执行。
+- 同规则相同 ID 在冷却后仍去重；不同规则可使用相同 ID，忙时被拒绝的 ID 不会污染去重缓存。
+- 未被选中的 topic 输入溢出，不会将当前事件标记为不完整。
+- 不存在的 topic 与重复规则名在启动时被拒绝。
+- 回归测试按新语义将“合并触发”替换为“忙时拒绝”、将“最大时长延长截断”替换为“不延长窗口”。2692 条序号消息实际回放逐条一致，两组静态 TF 恢复成功；3039 条真实 IMU 匹配源 bag 连续片段。
+
+报告：[MCAP 专项](reports/v02_triggers_mcap.json)、[SQLite3 专项](reports/v02_triggers_sqlite3.json)、[MCAP 回归](reports/v02_mcap_acceptance.json)。
+
+当前实现也会在旧 Writer 尚未完成时拒绝新 trigger；本轮未用慢磁盘强制制造“超过 3 秒仍在 FINALIZING”的场景。完整 SQLite3 旧场景回归和 v0.2 性能复测不包含在本轮，SQLite3 本轮验证范围为上述 trigger 专项。

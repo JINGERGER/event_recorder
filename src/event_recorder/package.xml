@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
 <package format="3">
-  <name>event_recorder</name><version>0.1.0</version>
+  <name>event_recorder</name><version>0.2.0</version>
   <description>Bounded, trigger-based ROS 2 recording with pre/post windows.</description>
   <maintainer email="maintainer@example.com">Maintainer</maintainer><license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>

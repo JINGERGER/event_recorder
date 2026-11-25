@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cmath>
 #include <iostream>
+#include <regex>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -33,12 +34,11 @@ struct Message {
 struct Input {
   enum Kind { DATA, TRIGGER, TICK, STOP } kind;
   Message msg;
-  std::string id, reason;
+  std::string id, reason, rule;
 };
 struct Event {
-  std::string id;
-  Ns start{}, end{}, limit{};
-  size_t trigger_bytes{};
+  std::string id, rule;
+  Ns start{}, end{};
   YAML::Node meta;
   std::set<std::string> errors;
 };
@@ -58,6 +58,7 @@ class Recorder : public rclcpp::Node {
     };
     pre_ = seconds("pre_trigger_seconds", 5); post_ = seconds("post_trigger_seconds", 10);
     retention_ = seconds("history_retention_seconds", 8);
+    cooldown_ = seconds("trigger_cooldown_seconds", 3);
     maximum_ = seconds("max_event_seconds", 300); dedup_ = seconds("dedup_seconds", 60);
     if (retention_ < pre_ || maximum_ < pre_ + post_) throw std::runtime_error("invalid window limits");
     auto budget = [this](const char * name, int64_t value) {
@@ -87,17 +88,48 @@ class Recorder : public rclcpp::Node {
     for (size_t i = 0; i < topics.size(); ++i)
       subscribe(topics[i], types[i], false, rel.empty() ? "best_effort" : rel[i], dur.empty() ? "volatile" : dur[i]);
     for (size_t i = 0; i < ct.size(); ++i) subscribe(ct[i], cy[i], true, "reliable", "transient_local");
+    auto names = declare_parameter<std::vector<std::string>>("trigger_list", std::vector<std::string>{});
+    named_triggers_ = !names.empty();
+    if (names.empty()) {
+      for (const auto & pair : metadata_) rules_["default"].insert(pair.first);
+      names.push_back("default");
+    } else {
+      for (const auto & name : names) {
+        if (!std::regex_match(name, std::regex("[A-Za-z][A-Za-z0-9_]*")) || rules_.count(name))
+          throw std::runtime_error("invalid or duplicate trigger name: " + name);
+        auto selected = declare_parameter<std::vector<std::string>>(
+          "triggers." + name + ".topics", std::vector<std::string>{});
+        if (selected.empty()) throw std::runtime_error("trigger has no topics: " + name);
+        auto & rule = rules_[name];
+        for (const auto & topic : selected) {
+          if (!metadata_.count(topic)) throw std::runtime_error("unknown topic in trigger " + name + ": " + topic);
+          if (!rule.insert(topic).second) throw std::runtime_error("duplicate topic in trigger " + name);
+        }
+      }
+    }
+    default_rule_ = declare_parameter<std::string>("default_trigger", names.front());
+    if (!rules_.count(default_rule_)) throw std::runtime_error("default_trigger is not in trigger_list");
     trigger_ = create_subscription<std_msgs::msg::String>("~/trigger", 100,
       [this](std_msgs::msg::String::ConstSharedPtr m) {
-        // Wire format: id|reason; a plain string is an anonymous reason.
-        auto p = m->data.find('|');
-        enqueue(Input::TRIGGER, {}, p == std::string::npos ? "" : m->data.substr(0, p),
-          p == std::string::npos ? m->data : m->data.substr(p + 1));
+        if (!named_triggers_) {
+          auto p = m->data.find('|');
+          enqueue(Input::TRIGGER, {}, p == std::string::npos ? "" : m->data.substr(0, p),
+            p == std::string::npos ? m->data : m->data.substr(p + 1), default_rule_);
+          return;
+        }
+        // Named mode: rule|trigger_id|reason, or just rule for an anonymous trigger.
+        auto first = m->data.find('|');
+        auto second = first == std::string::npos ? first : m->data.find('|', first + 1);
+        if (first != std::string::npos && second == std::string::npos) {
+          reject("invalid_format"); return;
+        }
+        enqueue(Input::TRIGGER, {}, second == std::string::npos ? "" : m->data.substr(first + 1, second - first - 1),
+          second == std::string::npos ? "" : m->data.substr(second + 1), m->data.substr(0, first));
       });
     service_ = create_service<std_srvs::srv::Trigger>("~/trigger",
       [this](std::shared_ptr<std_srvs::srv::Trigger::Request>, std::shared_ptr<std_srvs::srv::Trigger::Response> r) {
-        r->success = enqueue(Input::TRIGGER, {}, "", "service");
-        r->message = r->success ? "queued; see event metadata for outcome" : "input queue full";
+        r->success = enqueue(Input::TRIGGER, {}, "", "service", default_rule_);
+        r->message = r->success ? "queued for default_trigger; busy/cooldown rules still apply" : "input queue full";
       });
     timer_ = create_wall_timer(std::chrono::milliseconds(20), [this] {enqueue(Input::TICK);});
     started_ = steady_now();
@@ -112,7 +144,7 @@ class Recorder : public rclcpp::Node {
     { std::lock_guard<std::mutex> lock(input_mutex_);
       if (stopped_) return;
       stopped_ = true;
-      Input in{Input::STOP, {}, "", ""}; in.msg.steady = steady_now(); input_.push_back(in);
+      Input in{Input::STOP, {}, "", "", ""}; in.msg.steady = steady_now(); input_.push_back(in);
     }
     input_cv_.notify_one();
     if (manager_.joinable()) manager_.join();
@@ -121,6 +153,17 @@ class Recorder : public rclcpp::Node {
     if (writer_.joinable()) writer_.join();
   }
  private:
+  void reject(const std::string & reason) {
+    ++trigger_drops_;
+    RCLCPP_WARN(get_logger(), "Trigger rejected: %s", reason.c_str());
+  }
+  bool selected(const std::string & topic) const {
+    return rules_.at(active_->rule).count(topic) != 0;
+  }
+  bool lost_context() const {
+    for (const auto & topic : rules_.at(active_->rule)) if (context_lost_topics_.count(topic)) return true;
+    return false;
+  }
   void subscribe(const std::string & topic, const std::string & type, bool context,
                  const std::string & reliability, const std::string & durability) {
     if (topic.empty() || topic[0] != '/' || metadata_.count(topic)) throw std::runtime_error("duplicate or non-absolute topic");
@@ -149,20 +192,20 @@ class Recorder : public rclcpp::Node {
         enqueue(Input::DATA, m);
       }));
   }
-  bool enqueue(Input::Kind kind, Message m = {}, std::string id = "", std::string reason = "") {
+  bool enqueue(Input::Kind kind, Message m = {}, std::string id = "", std::string reason = "", std::string rule = "") {
     std::lock_guard<std::mutex> lock(input_mutex_);
     if (stopped_) return false;
     m.steady = steady_now(); m.ros = now().nanoseconds(); m.seq = ++sequence_;
-    size_t bytes = m.bytes() + id.size() + reason.size();
+    size_t bytes = m.bytes() + id.size() + reason.size() + rule.size();
     if (input_.size() >= items_ || input_bytes_ + bytes > input_limit_) {
-      if (kind == Input::DATA) { last_input_drop_ = m.steady; ++input_drops_; }
+      if (kind == Input::DATA) { last_input_drops_[m.topic] = m.steady; ++input_drops_; }
       if (kind == Input::TRIGGER) {
         ++trigger_drops_; RCLCPP_ERROR(get_logger(), "Trigger rejected: input queue full");
       }
       return false;
     }
     input_bytes_ += bytes;
-    input_.push_back({kind, m, std::move(id), std::move(reason)}); input_cv_.notify_one(); return true;
+    input_.push_back({kind, m, std::move(id), std::move(reason), std::move(rule)}); input_cv_.notify_one(); return true;
   }
   bool job(Job j) {
     std::lock_guard<std::mutex> lock(write_mutex_);
@@ -173,6 +216,7 @@ class Recorder : public rclcpp::Node {
     jobs_.push_back(std::move(j)); write_cv_.notify_one(); return true;
   }
   void send(const Message & m, bool context = false) {
+    if (!selected(m.topic)) return;
     Message copy = m; copy.context = context;
     if (!job({Job::WRITE, active_->id, copy, {}})) {
       active_->errors.insert("writer_queue_overflow");
@@ -185,7 +229,7 @@ class Recorder : public rclcpp::Node {
       auto it = context_.find(key);
       if (it != context_.end()) {context_bytes_ -= it->second.bytes(); context_.erase(it);}
       if (context_bytes_ + value.bytes() > context_limit_ || context_.size() >= items_) {
-        context_lost_ = true; return;
+        context_lost_topics_.insert(value.topic); return;
       }
       context_bytes_ += value.bytes(); context_[key] = std::move(value);
     };
@@ -205,7 +249,7 @@ class Recorder : public rclcpp::Node {
     while (!history_.empty() && (history_.front().steady < t - retention_ ||
            history_bytes_ > history_limit_ || history_.size() > items_)) {
       const auto & m = history_.front();
-      if (m.steady >= t - retention_) last_history_drop_ = m.steady;
+      if (m.steady >= t - retention_) last_history_drops_[m.topic] = m.steady;
       if (m.context) context_store(m); // baseline immediately before retained history
       history_bytes_ -= m.bytes(); history_.pop_front();
     }
@@ -213,44 +257,54 @@ class Recorder : public rclcpp::Node {
   void finish(const std::string & reason = "") {
     if (!active_) return;
     if (!reason.empty()) active_->errors.insert(reason);
-    Ns dropped = last_input_drop_.load();
-    if (dropped >= active_->start) active_->errors.insert("input_queue_overflow");
+    {
+      std::lock_guard<std::mutex> lock(input_mutex_);
+      for (const auto & topic : rules_.at(active_->rule)) {
+        if (last_input_drops_[topic] >= active_->start) active_->errors.insert("input_queue_overflow");
+      }
+    }
     active_->meta["input_drops_total"] = input_drops_.load();
     active_->meta["trigger_rejections_total"] = trigger_drops_.load();
     active_->meta["window_end_steady_ns"] = active_->end;
     active_->meta["errors"] = YAML::Node(YAML::NodeType::Sequence);
     for (const auto & error : active_->errors) active_->meta["errors"].push_back(error);
     active_->meta["data_complete"] = active_->errors.empty();
+    ready_after_ = active_->end + cooldown_;
+    active_->meta["next_trigger_not_before_steady_ns"] = ready_after_;
     job({Job::CLOSE, active_->id, {}, YAML::Clone(active_->meta)});
     active_.reset();
   }
   void trigger(const Input & in) {
     auto t = in.msg.steady;
+    if (!rules_.count(in.rule)) {reject("unknown_rule: " + in.rule); return;}
+    if (active_) {reject("busy"); return;}
+    if (t < ready_after_) {reject("cooldown"); return;}
+    if (pending_.load() != 0) {reject("finalizing"); return;}
     for (auto it = seen_.begin(); it != seen_.end();) {
-      if (it->second < t - dedup_) { seen_bytes_ -= it->first.size() + 64; it = seen_.erase(it); } else ++it;
+      if (it->second < t - dedup_) {seen_bytes_ -= it->first.size() + 64; it = seen_.erase(it);}
+      else ++it;
     }
+    // A rejected trigger is never inserted into the dedup cache and is never deferred.
+    std::string key = in.rule + "\n" + in.id;
     if (!in.id.empty()) {
-      if (seen_.count(in.id)) return;
-      if (seen_.size() >= items_ || seen_bytes_ + in.id.size() + 64 > input_limit_) {
-        ++trigger_drops_; RCLCPP_ERROR(get_logger(), "Trigger rejected: dedup capacity"); return;
+      if (seen_.count(key)) {reject("duplicate_id"); return;}
+      if (seen_.size() >= items_ || seen_bytes_ + key.size() + 64 > input_limit_) {
+        reject("dedup_capacity"); return;
       }
-      seen_[in.id] = t; seen_bytes_ += in.id.size() + 64;
+      seen_[key] = t; seen_bytes_ += key.size() + 64;
     }
-    if (active_ && (active_->trigger_bytes + in.id.size() + in.reason.size() + 256 > input_limit_ ||
-        active_->meta["triggers"].size() >= items_)) {
-      ++trigger_drops_; RCLCPP_ERROR(get_logger(), "Trigger rejected: event metadata capacity"); return;
-    }
-    if (!active_) {
-      if (pending_.load() >= pending_limit_) {
-        ++trigger_drops_; RCLCPP_ERROR(get_logger(), "Trigger rejected: pending event limit"); return;
-      }
+    {
       ++pending_;
       active_ = std::make_unique<Event>();
-      active_->id = run_id_ + "_" + std::to_string(++events_);
-      active_->start = t - pre_; active_->limit = active_->start + maximum_;
+      active_->rule = in.rule;
+      active_->id = run_id_ + "_" + in.rule + "_" + std::to_string(++events_);
+      active_->start = t - pre_; active_->end = t + post_;
       auto & meta = active_->meta;
-      meta["config_version"] = 1;
-      meta["event_id"] = active_->id; meta["software_version"] = "0.1.0";
+      meta["config_version"] = 2;
+      meta["trigger_rule"] = in.rule;
+      meta["trigger_policy"] = "single_active_reject_busy";
+      meta["trigger_cooldown_seconds"] = cooldown_/1e9;
+      meta["event_id"] = active_->id; meta["software_version"] = "0.2.0";
       meta["time_basis"] = "receive_steady"; meta["bag_timestamp_basis"] = "receive_ros";
       meta["window_start_steady_ns"] = active_->start;
       meta["pre_trigger_seconds"] = pre_/1e9; meta["post_trigger_seconds"] = post_/1e9;
@@ -261,28 +315,28 @@ class Recorder : public rclcpp::Node {
       meta["minimum_free_bytes"] = free_limit_; meta["queue_items"] = items_;
       meta["max_pending_events"] = pending_limit_; meta["dedup_seconds"] = dedup_/1e9;
       for (const auto & pair : metadata_) {
+        if (!selected(pair.first)) continue;
         meta["topics"][pair.first]["type"] = pair.second.type;
         meta["topics"][pair.first]["qos"] = YAML::Load(pair.second.offered_qos_profiles);
       }
-      bool enough = started_ <= active_->start && last_history_drop_ < active_->start;
+      bool enough = started_ <= active_->start;
+      for (const auto & topic : rules_.at(in.rule))
+        if (last_history_drops_[topic] >= active_->start) enough = false;
       meta["prehistory_available"] = enough;
       if (!enough) active_->errors.insert("insufficient_prehistory");
-      if (context_lost_) active_->errors.insert("context_cache_overflow");
-      job({Job::OPEN, active_->id, {}, {}});
+      if (lost_context()) active_->errors.insert("context_cache_overflow");
+      job({Job::OPEN, active_->id, {}, YAML::Clone(meta)});
       // Build context as of window start, then replay updates in the strict window.
       auto saved = context_; auto saved_bytes = context_bytes_;
       for (const auto & m : history_) if (m.context && m.steady < active_->start) context_store(m);
       for (const auto & pair : context_) send(pair.second, true);
       context_ = std::move(saved); context_bytes_ = saved_bytes;
-      if (context_lost_) active_->errors.insert("context_cache_overflow");
+      if (lost_context()) active_->errors.insert("context_cache_overflow");
       for (const auto & m : history_) if (m.steady >= active_->start) send(m);
       RCLCPP_INFO(get_logger(), "CAPTURING %s", active_->id.c_str());
     }
-    active_->end = std::min(t + post_, active_->limit);
-    if (t + post_ > active_->limit) active_->errors.insert("max_event_duration_truncated");
-    YAML::Node tr; tr["id"] = in.id; tr["reason"] = in.reason;
+    YAML::Node tr; tr["rule"] = in.rule; tr["id"] = in.id; tr["reason"] = in.reason;
     tr["receive_steady_ns"] = t; tr["receive_ros_ns"] = in.msg.ros;
-    active_->trigger_bytes += in.id.size() + in.reason.size() + 256;
     active_->meta["triggers"].push_back(tr);
   }
   void manage_loop() {
@@ -291,7 +345,7 @@ class Recorder : public rclcpp::Node {
       { std::unique_lock<std::mutex> lock(input_mutex_);
         input_cv_.wait(lock, [this] {return !input_.empty();});
         in = std::move(input_.front()); input_.pop_front();
-        if (in.kind != Input::STOP) input_bytes_ -= in.msg.bytes() + in.id.size() + in.reason.size();
+        if (in.kind != Input::STOP) input_bytes_ -= in.msg.bytes() + in.id.size() + in.reason.size() + in.rule.size();
       }
       try {
         if (active_ && in.msg.steady > active_->end) finish();
@@ -341,7 +395,8 @@ class Recorder : public rclcpp::Node {
           options.uri = (std::filesystem::path(output_) / j.id).string(); options.storage_id = storage_;
           options.max_cache_size = 0;
           writer->open(options, {"cdr", "cdr"});
-          for (const auto & pair : metadata_) writer->create_topic(pair.second);
+          for (const auto & pair : j.meta["topics"])
+            writer->create_topic(metadata_.at(pair.first.as<std::string>()));
         } else if (j.kind == Job::WRITE && error.empty()) {
           if (std::filesystem::space(output_).available < free_limit_) throw std::runtime_error("minimum free disk space violated");
           auto bag = std::make_shared<rosbag2_storage::SerializedBagMessage>();
@@ -381,16 +436,18 @@ class Recorder : public rclcpp::Node {
       }
     }
   }
-  Ns pre_, post_, retention_, maximum_, dedup_, started_{}, last_history_drop_{}, last_jump_{};
+  Ns pre_, post_, retention_, maximum_, dedup_, cooldown_, ready_after_{}, started_{}, last_jump_{};
   Ns last_steady_{}, last_ros_{};
   size_t history_limit_, input_limit_, writer_limit_, context_limit_, items_, pending_limit_, free_limit_;
   size_t seen_bytes_{}, input_bytes_{}, history_bytes_{}, write_bytes_{}, context_bytes_{}, write_data_items_{};
   uint64_t sequence_{}, events_{};
-  std::atomic<Ns> last_input_drop_{0};
+  std::map<std::string, Ns> last_input_drops_, last_history_drops_;
+  std::map<std::string, std::set<std::string>> rules_;
+  std::set<std::string> context_lost_topics_;
   std::atomic<uint64_t> input_drops_{0}, trigger_drops_{0};
   std::atomic<size_t> pending_{0};
-  bool stopped_{}, writer_stop_{}, context_lost_{};
-  std::string output_, storage_, run_id_;
+  bool stopped_{}, writer_stop_{}, named_triggers_{};
+  std::string output_, storage_, run_id_, default_rule_;
   std::mutex input_mutex_, write_mutex_;
   std::condition_variable input_cv_, write_cv_;
   std::deque<Input> input_;
