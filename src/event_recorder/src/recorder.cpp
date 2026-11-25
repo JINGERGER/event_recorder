@@ -10,6 +10,7 @@
 #include <cmath>
 #include <iostream>
 #include <regex>
+#include <future>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -18,6 +19,16 @@
 #include <set>
 #include <thread>
 
+// Explicit string tags preserve identifiers such as "on" for YAML 1.1 readers.
+static std::string dump_yaml(const YAML::Node & node) {
+  YAML::Emitter emitter;
+  emitter << node;
+  if (!emitter.good()) throw std::runtime_error("YAML serialization failed");
+  return emitter.c_str();
+}
+static YAML::Node yaml_string(const std::string & value) {
+  YAML::Node result(value); result.SetTag("tag:yaml.org,2002:str"); return result;
+}
 using Ns = int64_t;
 static Ns steady_now() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -31,10 +42,15 @@ struct Message {
   bool context{};
   size_t bytes() const { return data ? data->capacity() + 256 : 256; }
 };
+struct TriggerDecision {
+  bool accepted{false};
+  std::string event_id, reason{"manager_error"};
+};
 struct Input {
   enum Kind { DATA, TRIGGER, TICK, STOP } kind;
   Message msg;
   std::string id, reason, rule;
+  std::shared_ptr<std::promise<TriggerDecision>> completion;
 };
 struct Event {
   std::string id, rule;
@@ -126,11 +142,43 @@ class Recorder : public rclcpp::Node {
         enqueue(Input::TRIGGER, {}, second == std::string::npos ? "" : m->data.substr(first + 1, second - first - 1),
           second == std::string::npos ? "" : m->data.substr(second + 1), m->data.substr(0, first));
       });
-    service_ = create_service<std_srvs::srv::Trigger>("~/trigger",
-      [this](std::shared_ptr<std_srvs::srv::Trigger::Request>, std::shared_ptr<std_srvs::srv::Trigger::Response> r) {
-        r->success = enqueue(Input::TRIGGER, {}, "", "service", default_rule_);
-        r->message = r->success ? "queued for default_trigger; busy/cooldown rules still apply" : "input queue full";
-      });
+    // These services reply only after the ordered event manager has made its decision.
+    service_group_ = create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    auto make_service = [this](const std::string & path, const std::string & rule) {
+      return create_service<std_srvs::srv::Trigger>(path,
+        [this, rule](std::shared_ptr<std_srvs::srv::Trigger::Request>,
+                     std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+          auto completion = std::make_shared<std::promise<TriggerDecision>>();
+          auto result = completion->get_future();
+          TriggerDecision decision{false, "", "input_queue_full"};
+          if (enqueue(Input::TRIGGER, {}, "", "service", rule, completion)) decision = result.get();
+          response->success = decision.accepted;
+          YAML::Node details;
+          details["accepted"] = decision.accepted; details["rule"] = yaml_string(rule);
+          details["event_id"] = decision.event_id; details["reason"] = decision.reason;
+          response->message = dump_yaml(details);
+        }, rmw_qos_profile_services_default, service_group_);
+    };
+    service_ = make_service("~/trigger", default_rule_);
+    for (const auto & rule : rules_)
+      rule_services_.push_back(make_service("~/triggers/" + rule.first, rule.first));
+    status_publisher_ = create_publisher<std_msgs::msg::String>(
+      "~/status", rclcpp::QoS(1).reliable().transient_local());
+    // Capture the effective startup configuration; runtime parameter edits do not hot-reload it.
+    for (const auto & parameter : get_parameters(list_parameters({}, 100).names)) {
+      auto name = parameter.get_name();
+      switch (parameter.get_type()) {
+        case rclcpp::ParameterType::PARAMETER_BOOL: configuration_[name] = parameter.as_bool(); break;
+        case rclcpp::ParameterType::PARAMETER_INTEGER: configuration_[name] = parameter.as_int(); break;
+        case rclcpp::ParameterType::PARAMETER_DOUBLE: configuration_[name] = parameter.as_double(); break;
+        case rclcpp::ParameterType::PARAMETER_STRING: configuration_[name] = yaml_string(parameter.as_string()); break;
+        case rclcpp::ParameterType::PARAMETER_STRING_ARRAY:
+          configuration_[name] = YAML::Node(YAML::NodeType::Sequence);
+          for (const auto & value : parameter.as_string_array()) configuration_[name].push_back(yaml_string(value));
+          break;
+        default: break;
+      }
+    }
     timer_ = create_wall_timer(std::chrono::milliseconds(20), [this] {enqueue(Input::TICK);});
     started_ = steady_now();
     run_id_ = "event_" + std::to_string(now().nanoseconds()) + "_" + std::to_string(started_);
@@ -144,7 +192,7 @@ class Recorder : public rclcpp::Node {
     { std::lock_guard<std::mutex> lock(input_mutex_);
       if (stopped_) return;
       stopped_ = true;
-      Input in{Input::STOP, {}, "", "", ""}; in.msg.steady = steady_now(); input_.push_back(in);
+      Input in{Input::STOP, {}, "", "", "", {}}; in.msg.steady = steady_now(); input_.push_back(in);
     }
     input_cv_.notify_one();
     if (manager_.joinable()) manager_.join();
@@ -184,7 +232,7 @@ class Recorder : public rclcpp::Node {
       profile[key]["sec"] = 9223372036LL; profile[key]["nsec"] = 854775807;
     }
     profile["liveliness"] = 1; profile["avoid_ros_namespace_conventions"] = false;
-    YAML::Node profiles; profiles.push_back(profile); tm.offered_qos_profiles = YAML::Dump(profiles);
+    YAML::Node profiles; profiles.push_back(profile); tm.offered_qos_profiles = dump_yaml(profiles);
     metadata_[topic] = tm;
     subscriptions_.push_back(create_generic_subscription(topic, type, qos,
       [this, topic, type, context](std::shared_ptr<rclcpp::SerializedMessage> data) {
@@ -192,7 +240,8 @@ class Recorder : public rclcpp::Node {
         enqueue(Input::DATA, m);
       }));
   }
-  bool enqueue(Input::Kind kind, Message m = {}, std::string id = "", std::string reason = "", std::string rule = "") {
+  bool enqueue(Input::Kind kind, Message m = {}, std::string id = "", std::string reason = "", std::string rule = "",
+               std::shared_ptr<std::promise<TriggerDecision>> completion = {}) {
     std::lock_guard<std::mutex> lock(input_mutex_);
     if (stopped_) return false;
     m.steady = steady_now(); m.ros = now().nanoseconds(); m.seq = ++sequence_;
@@ -205,7 +254,7 @@ class Recorder : public rclcpp::Node {
       return false;
     }
     input_bytes_ += bytes;
-    input_.push_back({kind, m, std::move(id), std::move(reason), std::move(rule)}); input_cv_.notify_one(); return true;
+    input_.push_back({kind, m, std::move(id), std::move(reason), std::move(rule), std::move(completion)}); input_cv_.notify_one(); return true;
   }
   bool job(Job j) {
     std::lock_guard<std::mutex> lock(write_mutex_);
@@ -274,12 +323,15 @@ class Recorder : public rclcpp::Node {
     job({Job::CLOSE, active_->id, {}, YAML::Clone(active_->meta)});
     active_.reset();
   }
-  void trigger(const Input & in) {
+  TriggerDecision trigger(const Input & in) {
     auto t = in.msg.steady;
-    if (!rules_.count(in.rule)) {reject("unknown_rule: " + in.rule); return;}
-    if (active_) {reject("busy"); return;}
-    if (t < ready_after_) {reject("cooldown"); return;}
-    if (pending_.load() != 0) {reject("finalizing"); return;}
+    auto declined = [this](const std::string & reason) {
+      reject(reason); return TriggerDecision{false, "", reason};
+    };
+    if (!rules_.count(in.rule)) {return declined("unknown_rule: " + in.rule);}
+    if (active_) {return declined("busy");}
+    if (t < ready_after_) {return declined("cooldown");}
+    if (pending_.load() != 0) {return declined("finalizing");}
     for (auto it = seen_.begin(); it != seen_.end();) {
       if (it->second < t - dedup_) {seen_bytes_ -= it->first.size() + 64; it = seen_.erase(it);}
       else ++it;
@@ -287,9 +339,9 @@ class Recorder : public rclcpp::Node {
     // A rejected trigger is never inserted into the dedup cache and is never deferred.
     std::string key = in.rule + "\n" + in.id;
     if (!in.id.empty()) {
-      if (seen_.count(key)) {reject("duplicate_id"); return;}
+      if (seen_.count(key)) {return declined("duplicate_id");}
       if (seen_.size() >= items_ || seen_bytes_ + key.size() + 64 > input_limit_) {
-        reject("dedup_capacity"); return;
+        return declined("dedup_capacity");
       }
       seen_[key] = t; seen_bytes_ += key.size() + 64;
     }
@@ -301,10 +353,10 @@ class Recorder : public rclcpp::Node {
       active_->start = t - pre_; active_->end = t + post_;
       auto & meta = active_->meta;
       meta["config_version"] = 2;
-      meta["trigger_rule"] = in.rule;
+      meta["trigger_rule"] = yaml_string(in.rule);
       meta["trigger_policy"] = "single_active_reject_busy";
       meta["trigger_cooldown_seconds"] = cooldown_/1e9;
-      meta["event_id"] = active_->id; meta["software_version"] = "0.2.0";
+      meta["event_id"] = active_->id; meta["software_version"] = "0.3.0";
       meta["time_basis"] = "receive_steady"; meta["bag_timestamp_basis"] = "receive_ros";
       meta["window_start_steady_ns"] = active_->start;
       meta["pre_trigger_seconds"] = pre_/1e9; meta["post_trigger_seconds"] = post_/1e9;
@@ -335,9 +387,10 @@ class Recorder : public rclcpp::Node {
       for (const auto & m : history_) if (m.steady >= active_->start) send(m);
       RCLCPP_INFO(get_logger(), "CAPTURING %s", active_->id.c_str());
     }
-    YAML::Node tr; tr["rule"] = in.rule; tr["id"] = in.id; tr["reason"] = in.reason;
+    YAML::Node tr; tr["rule"] = yaml_string(in.rule); tr["id"] = yaml_string(in.id); tr["reason"] = yaml_string(in.reason);
     tr["receive_steady_ns"] = t; tr["receive_ros_ns"] = in.msg.ros;
     active_->meta["triggers"].push_back(tr);
+    return {true, active_->id, "accepted"};
   }
   void manage_loop() {
     for (;;) {
@@ -347,6 +400,7 @@ class Recorder : public rclcpp::Node {
         in = std::move(input_.front()); input_.pop_front();
         if (in.kind != Input::STOP) input_bytes_ -= in.msg.bytes() + in.id.size() + in.reason.size() + in.rule.size();
       }
+      TriggerDecision decision;
       try {
         if (active_ && in.msg.steady > active_->end) finish();
         if (in.kind == Input::STOP) {finish("shutdown_truncated"); break;}
@@ -359,17 +413,64 @@ class Recorder : public rclcpp::Node {
         if (in.kind == Input::DATA) {
           if (active_) send(in.msg);
           history_.push_back(in.msg); history_bytes_ += in.msg.bytes(); prune(in.msg.steady);
-        } else if (in.kind == Input::TRIGGER) trigger(in);
+        } else if (in.kind == Input::TRIGGER) decision = trigger(in);
         if (active_ && last_jump_ >= active_->start) active_->errors.insert("ros_clock_jump");
       } catch (const std::exception & e) {
         RCLCPP_ERROR(get_logger(), "Manager: %s", e.what()); finish("manager_error");
       }
+      if (in.completion) in.completion->set_value(decision);
+      publish_status(in.kind == Input::TRIGGER);
+    }
+  }
+  void publish_status(bool force = false) {
+    Ns t = steady_now();
+    if (!force && t - last_status_ < 200000000) return;
+    last_status_ = t;
+    if (!rclcpp::ok()) return;
+    try {
+      YAML::Node status;
+      status["run_id"] = run_id_; status["receive_steady_ns"] = t;
+      status["state"] = active_ ? "CAPTURING" : pending_.load() ? "FINALIZING" :
+        t < ready_after_ ? "COOLDOWN" : "READY";
+      status["active_event_id"] = active_ ? active_->id : "";
+      status["active_rule"] = yaml_string(active_ ? active_->rule : "");
+      status["remaining_seconds"] = active_ ? std::max<Ns>(0, active_->end - t)/1e9 : 0.0;
+      status["cooldown_remaining_seconds"] = std::max<Ns>(0, ready_after_ - t)/1e9;
+      status["history_bytes"] = history_bytes_; status["history_limit_bytes"] = history_limit_;
+      status["history_span_seconds"] = history_.empty() ? 0.0 : (t - history_.front().steady)/1e9;
+      status["prehistory_ready"] = t - started_ >= pre_;
+      status["input_drops"] = input_drops_.load(); status["trigger_rejections"] = trigger_drops_.load();
+      status["output_directory"] = std::filesystem::absolute(output_).string();
+      status["storage_id"] = storage_; status["default_trigger"] = yaml_string(default_rule_);
+      status["configuration"] = configuration_;
+      YAML::Node rule_list(YAML::NodeType::Map);
+      for (const auto & rule : rules_) {
+        YAML::Node topics(YAML::NodeType::Sequence);
+        for (const auto & topic : rule.second) topics.push_back(topic);
+        rule_list.force_insert(yaml_string(rule.first), topics);
+      }
+      status["rules"] = rule_list;
+      {
+        std::lock_guard<std::mutex> lock(input_mutex_);
+        status["input_queue_bytes"] = input_bytes_; status["input_queue_items"] = input_.size();
+      }
+      {
+        std::lock_guard<std::mutex> lock(write_mutex_);
+        status["writer_queue_bytes"] = write_bytes_; status["writer_queue_items"] = jobs_.size();
+      }
+      {
+        std::lock_guard<std::mutex> lock(result_mutex_);
+        if (!last_result_.empty()) status["last_event"] = YAML::Load(last_result_);
+      }
+      std_msgs::msg::String msg; msg.data = dump_yaml(status); status_publisher_->publish(msg);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(get_logger(), "Status publish failed: %s", e.what());
     }
   }
   void save_meta(const std::string & id, const YAML::Node & meta) {
     auto path = std::filesystem::path(output_) / (id + ".event.yaml");
     std::ofstream out(path.string() + ".tmp");
-    out.exceptions(std::ios::badbit | std::ios::failbit); out << meta; out.close();
+    out.exceptions(std::ios::badbit | std::ios::failbit); out << dump_yaml(meta); out.close();
     std::filesystem::rename(path.string() + ".tmp", path);
   }
   void write_loop() {
@@ -430,14 +531,27 @@ class Recorder : public rclcpp::Node {
         if (!error.empty()) {j.meta["errors"].push_back(error); j.meta["data_complete"] = false;}
         j.meta["status"] = !error.empty() ? "FAILED" : j.meta["data_complete"].as<bool>() ? "COMPLETED" : "PARTIAL";
         try {save_meta(j.id, j.meta);}
-        catch (const std::exception & e) {RCLCPP_ERROR(get_logger(), "Metadata save failed: %s", e.what());}
+        catch (const std::exception & e) {
+          j.meta["status"] = "FAILED"; j.meta["data_complete"] = false;
+          j.meta["errors"].push_back(std::string("metadata_save_failed: ") + e.what());
+          RCLCPP_ERROR(get_logger(), "Metadata save failed: %s", e.what());
+        }
+        {
+          YAML::Node summary;
+          for (const auto * field : {"event_id", "trigger_rule", "status", "data_complete", "errors"})
+            summary[field] = j.meta[field];
+          std::lock_guard<std::mutex> lock(result_mutex_); last_result_ = dump_yaml(summary);
+        }
         RCLCPP_INFO(get_logger(), "%s %s", j.meta["status"].as<std::string>().c_str(), j.id.c_str());
         --pending_;
       }
     }
   }
   Ns pre_, post_, retention_, maximum_, dedup_, cooldown_, ready_after_{}, started_{}, last_jump_{};
-  Ns last_steady_{}, last_ros_{};
+  Ns last_steady_{}, last_ros_{}, last_status_{};
+  YAML::Node configuration_;
+  std::mutex result_mutex_;
+  std::string last_result_;
   size_t history_limit_, input_limit_, writer_limit_, context_limit_, items_, pending_limit_, free_limit_;
   size_t seen_bytes_{}, input_bytes_{}, history_bytes_{}, write_bytes_{}, context_bytes_{}, write_data_items_{};
   uint64_t sequence_{}, events_{};
@@ -460,12 +574,20 @@ class Recorder : public rclcpp::Node {
   std::thread manager_, writer_;
   std::vector<rclcpp::GenericSubscription::SharedPtr> subscriptions_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr trigger_;
+  rclcpp::CallbackGroup::SharedPtr service_group_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr service_;
+  std::vector<rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr> rule_services_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 int main(int argc, char ** argv) {
   rclcpp::init(argc, argv);
-  try { auto node = std::make_shared<Recorder>(); rclcpp::spin(node); node->stop(); }
+  try {
+    auto node = std::make_shared<Recorder>();
+    // A service waiting for its ordered decision must not block data subscription callbacks.
+    rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 2);
+    executor.add_node(node); executor.spin(); node->stop();
+  }
   catch (const std::exception & e) {std::cerr << e.what() << '\n'; rclcpp::shutdown(); return 1;}
   rclcpp::shutdown(); return 0;
 }

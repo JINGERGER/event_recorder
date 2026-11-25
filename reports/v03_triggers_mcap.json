@@ -1,0 +1,26 @@
+[
+  {
+    "scenario": "named_selection_and_cooldown",
+    "passed": true,
+    "events": 2,
+    "cooldown_seconds": 3,
+    "no_deferred_triggers": true,
+    "topic_isolation": true,
+    "rule_scoped_dedup": true
+  },
+  {
+    "scenario": "unselected_loss_isolation",
+    "passed": true,
+    "global_input_drops": 1
+  },
+  {
+    "scenario": "invalid_topic",
+    "passed": true,
+    "startup_rejected": true
+  },
+  {
+    "scenario": "duplicate_rule",
+    "passed": true,
+    "startup_rejected": true
+  }
+]

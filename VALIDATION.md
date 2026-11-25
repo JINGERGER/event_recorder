@@ -57,3 +57,17 @@
 报告：[MCAP 专项](reports/v02_triggers_mcap.json)、[SQLite3 专项](reports/v02_triggers_sqlite3.json)、[MCAP 回归](reports/v02_mcap_acceptance.json)。
 
 当前实现也会在旧 Writer 尚未完成时拒绝新 trigger；本轮未用慢磁盘强制制造“超过 3 秒仍在 FINALIZING”的场景。完整 SQLite3 旧场景回归和 v0.2 性能复测不包含在本轮，SQLite3 本轮验证范围为上述 trigger 专项。
+
+## v0.3：轻量 Web GUI 与真实触发反馈
+
+2026-11-25 完成构建及验收，无编译警告：
+
+- 配置单元测试 3 组通过（包含无效时间、NaN、预算、topic/类型、QoS、规则及原子保存/版本冲突子场景）。
+- 真实 ROS + HTTP + Chrome 浏览器测试 9 组通过：启动与实时状态、无效请求拒绝、实际触发反馈/忙时拒绝/冷却、配置保存/待重启/冲突、桌面与 390px 手机布局、关闭浏览器仍完成录制、保存后重启生效、密钥访问、离线检测与禁用触发。浏览器无 JavaScript 错误。
+- GUI 验收包含名称为 `on` 的规则，确认 YAML 1.1 读取时仍保留字符串类型。保存配置自动省略 Humble 不能推断类型的可选空数组。
+- MCAP / SQLite3 各 4 组 trigger 专项回归通过。
+- MCAP 13 项完整回归通过：2703 条序号消息回放逐条一致并恢复静态 TF；3039 条 IMU 匹配原 bag 连续片段。
+
+报告：[GUI 端到端](reports/v03_gui.json)、[MCAP trigger 专项](reports/v03_triggers_mcap.json)、[SQLite3 trigger 专项](reports/v03_triggers_sqlite3.json)、[MCAP 完整回归](reports/v03_mcap_acceptance.json)。截图见 [控制台](docs/gui-overview.png)，本机 `validation/gui_v03_final/` 还保存了配置页和手机截图及日志。
+
+测试设备为本机 Ubuntu 22.04 / ROS 2 Humble，浏览器为本机 Google Chrome，Playwright 1.48 为临时测试依赖。尚未在 AGX Orin 上实测，不包含 TLS、持续高并发 HTTP 或当前版本性能复测。GUI 不提供运行中热更新、自动重启、删除 bag 或停止正在进行的录制。

@@ -4,3 +4,6 @@
 /event_bags/
 /validation/
 __pycache__/
+
+/recorder.local.yaml
+/recorder.local.yaml.bak

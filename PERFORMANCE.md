@@ -1,6 +1,6 @@
 # Recorder 负载实测
 
-> 以下为 v0.1 的实测基线。v0.2 增加 trigger list 与 topic 过滤后尚未重新测量性能，不能将这些数值视为 v0.2 的复测结果。
+> 以下为 v0.1 的实测基线。v0.2/v0.3 增加 trigger list、topic 过滤和 GUI 状态接口后尚未重新测量性能，不能将这些数值视为当前版本的复测结果。
 
 2026-11-25；Ubuntu 22.04 / ROS 2 Humble；AMD Ryzen 7 PRO 8840U（8 核 / 16 线程），约 30GiB 内存。MCAP 插件版本 0.15.17。
 

@@ -16,6 +16,65 @@ ros2 run event_recorder recorder --ros-args \
 
 在配置中将 `topics`、`types` 改为目标 topic 及其完整消息类型；`reliability` 和 `durability` 与 topic 数组一一对应，省略时分别为 `best_effort` 和 `volatile`。默认示例注册 `/imu/data`、`/points_raw` 和 `/tf_static`。上下文 topic 使用 reliable/transient-local；普通 topic 可分别配置 QoS。
 
+## 轻量 Web GUI（v0.3）
+
+![Web GUI 控制台（测试数据示例）](docs/gui-overview.png)
+
+无需 Node.js、npm 或数据库。运行依赖为 ROS 2 自带的 rclpy、std_msgs、std_srvs、launch_ros，以及 Python PyYAML。构建后在工作目录执行：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch event_recorder gui.launch.py
+```
+
+浏览器打开 **http://127.0.0.1:8080**。首次启动会在当前目录创建可写的 `recorder.local.yaml`（从示例配置复制），recorder 和 GUI 共同使用这个文件。后续启动保留文件内容，不会覆盖已保存配置。也可以指定路径和端口：
+
+```bash
+ros2 launch event_recorder gui.launch.py \
+  config:=/home/nezha/recorder.local.yaml port:=8080
+```
+
+- **录制控制台**：运行状态、后置窗口/冷却倒计时、历史缓存与写盘队列、输入丢弃与触发拒绝计数；每条运行中的规则对应一个触发按钮。按钮等待 recorder 的实际反馈，显示接受的事件 ID 或拒绝原因。
+- **规则与配置**：编辑数据 topic、类型与 QoS，或从 ROS graph 发现 topic；管理规则与录制 topic 清单；设置窗口、存储目录、格式及内存预算。保存会校验配置、检测并发修改并保留一份 `.bak`。
+- **事件记录**：显示输出目录内最近 100 个事件，含规则、消息数、完整性状态、错误及 bag 路径。没有删除文件或停止录制的操作。
+
+保存配置**不热更新、不重启节点**。页面会提示“待重启”，录制按钮继续使用运行中的规则。完成当前录制后，在启动终端 Ctrl+C，再重新运行同一条 launch 命令使配置生效。不要在录制过程中重启，否则当前窗口会被标记截断。
+
+浏览器关闭不影响录制。Web 服务与 recorder 是独立进程；单独停止 Web 服务也不会停止 recorder。停止整个 launch 则会正常关闭这两个进程。
+
+如已有独立运行的 recorder，只启动 GUI 并指定它的配置文件：
+
+```bash
+ros2 run event_recorder web_gui --config /absolute/path/recorder.yaml
+# recorder 在其他 namespace 时追加 --recorder /robot/event_recorder
+```
+
+不要同时启动两个同名 recorder。GUI 和 recorder 应使用同一 ROS_DOMAIN_ID 和 RMW 配置；查看的事件文件也应在 GUI 主机可访问的输出目录中。GUI 默认和 recorder 运行在同一台设备上。
+
+### 从笔记本访问 Orin
+
+默认只监听设备本机。可以在笔记本建立 SSH 隧道，再访问笔记本的 localhost:8080：
+
+```bash
+ssh -L 8080:127.0.0.1:8080 user@orin-ip
+```
+
+需要直接监听可信局域网时，设置访问密钥（在页面输入），然后指定 host：
+
+```bash
+export EVENT_RECORDER_GUI_TOKEN='替换为你自己的长随机密钥'
+ros2 launch event_recorder gui.launch.py host:=0.0.0.0
+```
+
+直接局域网模式使用 HTTP，不提供 TLS；需要加密时使用 SSH 隧道。GUI 不依赖 CDN，页面资源全部本地提供。
+
+### ROS / HTTP 接口
+
+- `/event_recorder/status`：`std_msgs/msg/String`，5Hz YAML 状态快照，reliable/transient-local；包含运行配置、规则、缓存/队列、最近完成事件。超过 2 秒未收到新状态时 GUI 显示离线并禁用触发。
+- `/event_recorder/triggers/<规则名>`：`std_srvs/srv/Trigger`，返回实际接受结果；通用 `/event_recorder/trigger` 服务使用 default_trigger。原 topic 触发入口保持兼容。
+- HTTP `GET /api/state`、`/api/config`、`/api/topics`、`/api/events`；`POST /api/trigger`（`{"rule":"motion"}`）、`/api/config`（parameters 与 revision）。后者保存文件，触发接口不会自行重试。若回应超时，页面会提示结果未知，需检查状态。
+
 ## Trigger list
 
 所有数据 topic 的名称、类型及 QoS 在顶层统一注册，持续订阅并共享一份历史缓存；`trigger_list` 管理规则名称，每条规则的 `topics` 决定实际写入 bag 的数据。上下文 topic（例如 `/tf_static`）也需要显式选入规则。
@@ -58,7 +117,7 @@ ros2 service call /event_recorder/trigger std_srvs/srv/Trigger '{}'
 
 默认 60 秒内按 `(规则名, 请求ID)` 去重，只有已接受的请求进入去重缓存；不同规则可以使用相同 ID。未知规则、未注册 topic、重复规则名、空 topic 清单等会被拒绝或使启动失败。日志区分 `busy`、`cooldown`、`finalizing`、`duplicate_id` 等原因，事件元数据保存 `trigger_rule`、选中的 topic、冷却截止时间及累计拒绝数量。
 
-服务返回 success 仅表示请求进入内部处理队列，最终仍可能被忙时/冷却策略拒绝；该内部队列用于串行判定，不会保留被拒绝的请求等待重试。时间戳定义为进入排序入口的接收时间。
+v0.3 起，服务返回的 success 表示事件管理器已经实际接受/拒绝本次触发；message 是包含 accepted、rule、event_id 和 reason 的 YAML。服务位于独立回调组，等待结果不会阻塞数据订阅。内部队列用于串行判定，不会保留被拒绝的请求等待重试。时间戳定义为进入排序入口的接收时间。
 
 兼容旧配置：未配置 `trigger_list` 时隐式创建 `default` 规则，选择所有已注册 topic；字符串继续支持旧的 `请求ID|原因` / 匿名原因格式。**旧配置也遵循新的单事件和 3 秒冷却策略，不再合并触发。**
 
@@ -123,3 +182,23 @@ ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1 ROS_LOG_DIR=/tmp/event_recorder_ros_logs \
 ```
 
 专项测试覆盖 topic 隔离、静态上下文选择、忙时拒绝、完整 3 秒冷却及边界前拒绝、不延迟重放、规则内去重、跨规则相同 ID、未选中 topic 丢弃隔离和错误配置拒绝。
+
+### GUI 验证
+
+配置校验单元测试无需浏览器：
+
+```bash
+/usr/bin/python3 tests/test_gui_config.py
+```
+
+浏览器验收的 Playwright 仅是测试依赖，不是 GUI 运行依赖。使用系统已安装的 Chrome（可通过 `--chrome` 指定）：
+
+```bash
+/usr/bin/python3 -m pip install --target /tmp/event-recorder-browser-deps playwright==1.48.0
+# 先 source ROS 与 install/setup.bash
+PYTHONPATH=/tmp/event-recorder-browser-deps:$PYTHONPATH \
+ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1 ROS_LOG_DIR=/tmp/event_recorder_ros_logs \
+  /usr/bin/python3 tests/validate_gui.py --output validation/my_gui_checks
+```
+
+测试覆盖实际服务反馈、冷却禁用按钮、配置并发修改、重启生效、访问密钥、离线检测、桌面/手机布局和关闭浏览器后的持续录制。结果与截图保存在指定目录。GUI 当前要求至少注册一个普通数据 topic；保存时自动省略可选的空数组，以兼容 Humble 的参数 YAML 解析器。
