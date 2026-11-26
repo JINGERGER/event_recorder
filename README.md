@@ -14,11 +14,11 @@ ros2 run event_recorder recorder --ros-args \
   --params-file src/event_recorder/config/recorder.yaml
 ```
 
-在配置中将 `topics`、`types` 改为目标 topic 及其完整消息类型；`reliability` 和 `durability` 与 topic 数组一一对应，省略时分别为 `best_effort` 和 `volatile`。默认示例注册 `/imu/data`、`/points_raw` 和 `/tf_static`。上下文 topic 使用 reliable/transient-local；普通 topic 可分别配置 QoS。
+在配置中将 `topics`、`types` 改为目标 topic 及其完整消息类型；`reliability` 和 `durability` 与 topic 数组一一对应，省略时分别为 `best_effort` 和 `volatile`。默认示例注册 `/lidar_imu`、`/odom`、`/cmd_vel`、`/joint_states`、`/tf` 和 `/tf_static`。上下文 topic 使用 reliable/transient-local；普通 topic 可分别配置 QoS。
 
 ## 轻量 Web GUI（v0.3）
 
-![Web GUI 控制台（测试数据示例）](docs/gui-overview.png)
+![Web GUI 控制台（默认机器人类型配置）](docs/gui-overview.png)
 
 无需 Node.js、npm 或数据库。运行依赖为 ROS 2 自带的 rclpy、std_msgs、std_srvs、launch_ros，以及 Python PyYAML。构建后在工作目录执行：
 
@@ -35,8 +35,8 @@ ros2 launch event_recorder gui.launch.py \
   config:=/home/nezha/recorder.local.yaml port:=8080
 ```
 
-- **录制控制台**：运行状态、后置窗口/冷却倒计时、历史缓存与写盘队列、输入丢弃与触发拒绝计数；每条运行中的规则对应一个触发按钮。按钮等待 recorder 的实际反馈，显示接受的事件 ID 或拒绝原因。
-- **规则与配置**：编辑数据 topic、类型与 QoS，或从 ROS graph 发现 topic；管理规则与录制 topic 清单；设置窗口、存储目录、格式及内存预算。保存会校验配置、检测并发修改并保留一份 `.bak`。
+- **录制控制台**：运行状态、后置窗口/冷却倒计时、历史缓存与写盘队列、输入丢弃与触发拒绝计数；每种运行配置中的机器人对应一个触发按钮。按钮等待 recorder 的实际反馈，显示接受的事件 ID 或拒绝原因。
+- **机器人与配置**：编辑数据 topic、类型与 QoS，或从 ROS graph 发现 topic；管理机器人类型与录制 topic 清单；设置窗口、存储目录、格式及内存预算。保存会校验配置、检测并发修改并保留一份 `.bak`。
 - **事件记录**：显示输出目录内最近 100 个事件，含规则、消息数、完整性状态、错误及 bag 路径。没有删除文件或停止录制的操作。
 
 保存配置**不热更新、不重启节点**。页面会提示“待重启”，录制按钮继续使用运行中的规则。完成当前录制后，在启动终端 Ctrl+C，再重新运行同一条 launch 命令使配置生效。不要在录制过程中重启，否则当前窗口会被标记截断。
@@ -72,36 +72,40 @@ ros2 launch event_recorder gui.launch.py host:=0.0.0.0
 ### ROS / HTTP 接口
 
 - `/event_recorder/status`：`std_msgs/msg/String`，5Hz YAML 状态快照，reliable/transient-local；包含运行配置、规则、缓存/队列、最近完成事件。超过 2 秒未收到新状态时 GUI 显示离线并禁用触发。
-- `/event_recorder/triggers/<规则名>`：`std_srvs/srv/Trigger`，返回实际接受结果；通用 `/event_recorder/trigger` 服务使用 default_trigger。原 topic 触发入口保持兼容。
-- HTTP `GET /api/state`、`/api/config`、`/api/topics`、`/api/events`；`POST /api/trigger`（`{"rule":"motion"}`）、`/api/config`（parameters 与 revision）。后者保存文件，触发接口不会自行重试。若回应超时，页面会提示结果未知，需检查状态。
+- `/event_recorder/triggers/<机器人类型名称>`：`std_srvs/srv/Trigger`，返回实际接受结果；通用 `/event_recorder/trigger` 服务使用 default_trigger。原 topic 触发入口保持兼容。
+- HTTP `GET /api/state`、`/api/config`、`/api/topics`、`/api/events`；`POST /api/trigger`（`{"rule":"go2"}`）、`/api/config`（parameters 与 revision）。后者保存文件，触发接口不会自行重试。若回应超时，页面会提示结果未知，需检查状态。
 
-## Trigger list
+## 机器人类型（Trigger list）
 
-所有数据 topic 的名称、类型及 QoS 在顶层统一注册，持续订阅并共享一份历史缓存；`trigger_list` 管理规则名称，每条规则的 `topics` 决定实际写入 bag 的数据。上下文 topic（例如 `/tf_static`）也需要显式选入规则。
+所有数据 topic 的名称、类型及 QoS 在顶层统一注册，持续订阅并共享一份历史缓存；`trigger_list` 按机器人类型管理配置，每种机器人的 `topics` 决定实际写入 bag 的数据。机器人类型只是录制配置的名称，不会自动识别机器人或执行异常检测；底层 `rule` / `trigger_rule` 字段和接口保持兼容。上下文 topic（例如 `/tf_static`）也需要显式选入规则。
 
 ```yaml
 event_recorder:
   ros__parameters:
     # topics/types/reliability/durability/context_topics 等仍按示例配置注册
     trigger_cooldown_seconds: 3.0
-    trigger_list: [motion, perception]
-    default_trigger: motion
+    trigger_list: [go2, bunker_mini, piper]
+    default_trigger: go2
     triggers:
-      motion:
-        topics: [/imu/data, /tf_static]
-      perception:
-        topics: [/points_raw, /tf_static]
+      go2:
+        topics: [/lidar_imu, /tf_static]
+      bunker_mini:
+        topics: [/odom, /cmd_vel, /tf_static]
+      piper:
+        topics: [/joint_states, /tf, /tf_static]
 ```
 
-统一入口 `/event_recorder/trigger` 使用 `std_msgs/msg/String`，格式为 **`规则名|请求ID|原因`**。规则名只允许字母开头、后续字母/数字/下划线，名称区分大小写。请求 ID 为空时不去重；也可以只发送规则名匿名触发。
+**示例 topic 需要按实际驱动确认**：`/lidar_imu` 来自之前验证的 Go2 bag，其他为标准 ROS topic 示例，尚未在 Bunker Mini/Piper 实机上验证。可在 GUI 中修改；如果多个机器人同时运行，应给 topic 配置独立 namespace，类型名称本身不会隔离同名 topic。
+
+统一入口 `/event_recorder/trigger` 使用 `std_msgs/msg/String`，格式为 **`机器人类型名称|请求ID|原因`**。机器人类型名称只允许字母开头、后续字母/数字/下划线，名称区分大小写。请求 ID 为空时不去重；也可以只发送机器人类型名称匿名触发。
 
 ```bash
 ros2 topic pub --once /event_recorder/trigger std_msgs/msg/String \
-  "{data: 'motion|alarm-001|motion anomaly'}"
+  "{data: 'go2|alarm-001|robot anomaly'}"
 ros2 topic pub --once /event_recorder/trigger std_msgs/msg/String \
-  "{data: 'perception|alarm-002|point cloud anomaly'}"
+  "{data: 'bunker_mini|alarm-002|chassis anomaly'}"
 # 匿名触发指定规则：
-ros2 topic pub --once /event_recorder/trigger std_msgs/msg/String "{data: 'motion'}"
+ros2 topic pub --once /event_recorder/trigger std_msgs/msg/String "{data: 'piper'}"
 # 服务触发配置中的 default_trigger：
 ros2 service call /event_recorder/trigger std_srvs/srv/Trigger '{}'
 ```
@@ -113,9 +117,9 @@ ros2 service call /event_recorder/trigger std_srvs/srv/Trigger '{}'
 3. 窗口结束后从目标截止时间开始休眠 3 秒；如果旧事件还未完成写盘，则继续拒绝新 trigger。
 4. 冷却结束且写盘完成后，才允许接受下一次 trigger。被拒绝的请求不会等待条件满足后自动执行，发送方需要重新发起。
 
-例如 T=100s 接受 motion，录制窗口为 [95s,110s]，最早在 113s 接受下一次 trigger（若写盘完成）。期间 perception 请求会被拒绝，既不会加入当前 bag，也不会自动创建后续 bag。缓存仍持续更新，因此下一次规则也能获得前置历史。
+例如 T=100s 接受 go2，录制窗口为 [95s,110s]，最早在 113s 接受下一次 trigger（若写盘完成）。期间 bunker_mini 请求会被拒绝，既不会加入当前 bag，也不会自动创建后续 bag。缓存仍持续更新，因此下一次规则也能获得前置历史。
 
-默认 60 秒内按 `(规则名, 请求ID)` 去重，只有已接受的请求进入去重缓存；不同规则可以使用相同 ID。未知规则、未注册 topic、重复规则名、空 topic 清单等会被拒绝或使启动失败。日志区分 `busy`、`cooldown`、`finalizing`、`duplicate_id` 等原因，事件元数据保存 `trigger_rule`、选中的 topic、冷却截止时间及累计拒绝数量。
+默认 60 秒内按 `(机器人类型名称, 请求ID)` 去重，只有已接受的请求进入去重缓存；不同规则可以使用相同 ID。未知规则、未注册 topic、重复机器人类型名称、空 topic 清单等会被拒绝或使启动失败。日志区分 `busy`、`cooldown`、`finalizing`、`duplicate_id` 等原因，事件元数据保存 `trigger_rule`、选中的 topic、冷却截止时间及累计拒绝数量。
 
 v0.3 起，服务返回的 success 表示事件管理器已经实际接受/拒绝本次触发；message 是包含 accepted、rule、event_id 和 reason 的 YAML。服务位于独立回调组，等待结果不会阻塞数据订阅。内部队列用于串行判定，不会保留被拒绝的请求等待重试。时间戳定义为进入排序入口的接收时间。
 

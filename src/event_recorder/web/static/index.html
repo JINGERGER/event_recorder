@@ -11,7 +11,7 @@
     <div class="nav-label">工作空间</div>
     <nav aria-label="主导航">
       <button class="nav-item active" data-tab="overview"><span>◎</span>录制控制台</button>
-      <button class="nav-item" data-tab="configuration"><span>☷</span>规则与配置</button>
+      <button class="nav-item" data-tab="configuration"><span>☷</span>机器人与配置</button>
       <button class="nav-item" data-tab="events"><span>▤</span>事件记录</button>
     </nav>
     <div class="sidebar-footer"><span class="small-dot"></span> ROS 2 · Humble<br><span class="muted">v0.3 / Web Console</span></div>
@@ -22,7 +22,7 @@
       <div id="notice" class="notice hidden" role="status"></div>
       <section id="overview" class="page">
         <div class="page-heading"><div><div class="eyebrow">LIVE RECORDING</div><h1>录制控制台</h1><p>持续缓存，在关键时刻保存数据。</p></div><span id="storage-badge" class="pill">—</span></div>
-        <div id="restart-notice" class="notice warning hidden">已保存的配置与运行配置不同。重启 recorder 后生效，当前按钮仍使用运行中的规则。<button data-open="configuration" class="text-button">查看配置 →</button></div>
+        <div id="restart-notice" class="notice warning hidden">已保存的配置与运行配置不同。重启 recorder 后生效，当前按钮仍使用运行中的机器人类型。<button data-open="configuration" class="text-button">查看配置 →</button></div>
         <div class="status-panel" id="status-panel" data-state="OFFLINE">
           <div><div class="status-overline"><span class="status-light"></span><span id="state-label">等待连接录制器</span></div><div class="state-title" id="state-title">连接中</div><p id="state-description">正在获取录制器状态…</p><div id="active-event" class="mono subtle"></div></div>
           <div class="status-right"><span class="muted" id="timer-label">录制状态</span><strong id="countdown">—</strong><span id="window-summary" class="subtle">前置 — 秒 / 后置 — 秒</span></div>
@@ -33,13 +33,13 @@
           <article class="metric"><span>输入丢弃</span><strong id="input-drops">—</strong><small>进程累计 · 不包含 DDS 之前的丢包</small></article>
           <article class="metric"><span>触发拒绝</span><strong id="trigger-rejections">—</strong><small>忙时、冷却期或重复请求</small></article>
         </div>
-        <div class="section-heading"><div><h2>触发规则 <span id="rule-count" class="count">0</span></h2><p>每次仅录制一条规则；窗口结束后进入冷却。</p></div><button class="button secondary" data-open="configuration">管理规则 ↗</button></div>
+        <div class="section-heading"><div><h2>机器人类型 <span id="rule-count" class="count">0</span></h2><p>每次仅录制一种机器人类型；窗口结束后进入冷却。</p></div><button class="button secondary" data-open="configuration">管理机器人 ↗</button></div>
         <div id="trigger-cards" class="trigger-grid"><div class="empty">等待运行中的 trigger list…</div></div>
         <div class="section-heading"><h2>最近完成的事件</h2><button class="text-button" data-open="events">全部事件 →</button></div>
         <div id="last-event" class="panel empty">暂无完成的录制事件</div>
       </section>
       <section id="configuration" class="page hidden">
-        <div class="page-heading"><div><div class="eyebrow">CONFIGURATION</div><h1>规则与配置</h1><p>统一注册数据 topic，再为每条 trigger 选择需要录制的内容。</p></div><span id="config-dirty" class="pill">已加载</span></div>
+        <div class="page-heading"><div><div class="eyebrow">CONFIGURATION</div><h1>机器人与配置</h1><p>统一注册数据 topic，再为每种机器人选择需要录制的内容。</p></div><span id="config-dirty" class="pill">已加载</span></div>
         <div class="notice neutral">配置保存到 YAML 文件，不会中断当前录制。保存后需重启 recorder 才能生效。</div>
         <form id="config-form">
           <article class="panel"><div class="section-heading compact"><h2>录制窗口</h2><span class="muted">接收时间 · 单调时钟</span></div><div class="form-grid four">
@@ -48,11 +48,11 @@
             <label>历史保留 <span>秒</span><input id="history_retention_seconds" type="number" min="0.001" step="any" required></label>
             <label>触发冷却 <span>秒</span><input id="trigger_cooldown_seconds" type="number" min="0.001" step="any" required></label>
           </div></article>
-          <article class="panel"><div class="section-heading compact"><div><h2>数据 topics</h2><p>所有规则共享订阅与缓存。上下文 topic 使用 reliable / transient-local。</p></div><button type="button" id="add-topic" class="button secondary">＋ 添加 topic</button></div>
+          <article class="panel"><div class="section-heading compact"><div><h2>数据 topics</h2><p>所有机器人类型共享订阅与缓存。上下文 topic 使用 reliable / transient-local。</p></div><button type="button" id="add-topic" class="button secondary">＋ 添加 topic</button></div>
             <div class="discovery"><button type="button" id="discover" class="button subtle-button">发现 ROS topics</button><select id="discovered" aria-label="发现的 ROS topics"><option value="">选择运行中的 topic…</option></select><button type="button" id="import-topic" class="text-button">加入列表</button></div>
             <div class="table-scroll"><table class="topic-table"><thead><tr><th>Topic 名称</th><th>消息类型</th><th>可靠性</th><th>持久性</th><th>上下文</th><th></th></tr></thead><tbody id="topic-rows"></tbody></table></div>
           </article>
-          <article class="panel"><div class="section-heading compact"><div><h2>Trigger list</h2><p>名称必须唯一。默认规则用于通用 Trigger 服务。</p></div><button type="button" id="add-rule" class="button secondary">＋ 添加规则</button></div><div id="rule-rows"></div></article>
+          <article class="panel"><div class="section-heading compact"><div><h2>机器人类型</h2><p>名称必须唯一。默认类型用于通用 Trigger 服务。</p></div><button type="button" id="add-rule" class="button secondary">＋ 添加机器人类型</button></div><div id="rule-rows"></div></article>
           <article class="panel"><div class="section-heading compact"><h2>存储与内存预算</h2></div><div class="form-grid two">
             <label>存储格式<select id="storage_id"><option value="mcap">MCAP</option><option value="sqlite3">SQLite3</option></select></label>
             <label>输出目录<input id="output_directory" required placeholder="event_bags"></label>

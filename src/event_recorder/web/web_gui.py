@@ -62,7 +62,7 @@ class Bridge(Node):
         if not snapshot['online']:
             raise ApiError(503, '录制器离线或状态已超时，未发送触发请求')
         if rule not in snapshot['recorder'].get('rules', {}):
-            raise ApiError(400, '运行中的配置没有这条 trigger 规则')
+            raise ApiError(400, '运行中的配置没有这种机器人类型')
         with self.lock:
             client = self.trigger_clients.get(rule)
             if client is None:
@@ -228,7 +228,7 @@ def make_handler(app):
                 elif path == '/api/trigger':
                     rule = data.get('rule')
                     if not isinstance(rule, str) or len(rule) > 512:
-                        raise ValueError('trigger 名称无效')
+                        raise ValueError('机器人类型名称无效')
                     result = app.bridge.trigger_rule(rule)
                 else:
                     raise ApiError(404, '接口不存在')

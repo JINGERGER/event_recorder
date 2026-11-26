@@ -71,3 +71,7 @@
 报告：[GUI 端到端](reports/v03_gui.json)、[MCAP trigger 专项](reports/v03_triggers_mcap.json)、[SQLite3 trigger 专项](reports/v03_triggers_sqlite3.json)、[MCAP 完整回归](reports/v03_mcap_acceptance.json)。截图见 [控制台](docs/gui-overview.png)，本机 `validation/gui_v03_final/` 还保存了配置页和手机截图及日志。
 
 测试设备为本机 Ubuntu 22.04 / ROS 2 Humble，浏览器为本机 Google Chrome，Playwright 1.48 为临时测试依赖。尚未在 AGX Orin 上实测，不包含 TLS、持续高并发 HTTP 或当前版本性能复测。GUI 不提供运行中热更新、自动重启、删除 bag 或停止正在进行的录制。
+
+## 2026-11-26：按机器人类型命名
+
+默认配置改为 go2 / bunker_mini / piper，默认类型 go2，GUI 文案改为机器人类型。配置通过校验，示例使用的标准消息类型在 Humble 环境中可加载。构建通过，并在独立 ROS domain 88 启动默认配置验证实时状态和三种类型的按钮、配置页名称，Chrome 无页面错误；更新了控制台截图。此次验证未触发录制，未重复执行此前的完整 rosbag 回归。Bunker Mini/Piper 的 topic 清单是待实机确认的示例，不代表已完成对应机器人驱动适配。

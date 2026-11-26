@@ -8,7 +8,7 @@ const reasonNames = {busy:'正在录制，当前请求已拒绝', cooldown:'处�
 function el(tag, cls, text) { const node=document.createElement(tag); if(cls)node.className=cls; if(text!==undefined)node.textContent=text; return node; }
 function notice(text, kind='') { const n=$('notice'); n.className='notice'+(kind?' '+kind:''); n.textContent=text; }
 function markDirty() { dirty=true; $('config-dirty').textContent='有未保存的修改'; $('save-state').textContent='修改尚未保存'; }
-function showTab(name) { document.querySelectorAll('.page').forEach(p=>p.classList.toggle('hidden',p.id!==name)); document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name)); $('page-name').textContent={overview:'录制控制台',configuration:'规则与配置',events:'事件记录'}[name]; if(name==='events')loadEvents(); }
+function showTab(name) { document.querySelectorAll('.page').forEach(p=>p.classList.toggle('hidden',p.id!==name)); document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===name)); $('page-name').textContent={overview:'录制控制台',configuration:'机器人与配置',events:'事件记录'}[name]; if(name==='events')loadEvents(); }
 async function api(path, data) {
   const headers={}; if(token)headers.Authorization='Bearer '+token;
   if(data!==undefined)headers['Content-Type']='application/json';
@@ -22,10 +22,10 @@ function renderState(snapshot) {
   latest=snapshot; const s=snapshot.recorder||{}, online=snapshot.online, state=online?s.state:'OFFLINE';
   $('connection').className='connection'+(online?'':' offline'); $('connection').textContent=online?'录制器已连接':'录制器离线';
   $('status-panel').dataset.state=state;
-  const labels={READY:['可接受触发','准备就绪','历史缓存持续更新，选择下方规则开始录制。'],CAPTURING:['正在采集后置窗口','录制中','新的触发请求将被拒绝，当前窗口不会延长。'],FINALIZING:['正在关闭 bag','写盘中','等待数据写盘完成后，才能接受下一次触发。'],COOLDOWN:['窗口已结束','冷却中','冷却期内的新请求会直接拒绝，不会自动重试。'],OFFLINE:['暂无实时状态','未连接','请启动 recorder，或检查 ROS domain 和服务连接。']};
+  const labels={READY:['可接受触发','准备就绪','历史缓存持续更新，选择下方机器人类型开始录制。'],CAPTURING:['正在采集后置窗口','录制中','新的触发请求将被拒绝，当前窗口不会延长。'],FINALIZING:['正在关闭 bag','写盘中','等待数据写盘完成后，才能接受下一次触发。'],COOLDOWN:['窗口已结束','冷却中','冷却期内的新请求会直接拒绝，不会自动重试。'],OFFLINE:['暂无实时状态','未连接','请启动 recorder，或检查 ROS domain 和服务连接。']};
   const label=labels[state]||labels.OFFLINE;
   $('state-label').textContent=label[0]; $('state-title').textContent=label[1]; $('state-description').textContent=label[2];
-  $('active-event').textContent=online&&s.active_rule?'规则 '+s.active_rule+' · '+s.active_event_id:'';
+  $('active-event').textContent=online&&s.active_rule?'机器人 '+s.active_rule+' · '+s.active_event_id:'';
   $('countdown').textContent=!online?'—':state==='CAPTURING'?s.remaining_seconds.toFixed(1)+' s':state==='COOLDOWN'?s.cooldown_remaining_seconds.toFixed(1)+' s':state==='READY'?'READY':'…';
   $('timer-label').textContent=state==='CAPTURING'?'后置窗口剩余':state==='COOLDOWN'?'冷却剩余':'录制状态';
   const cfg=s.configuration||{};
@@ -88,9 +88,9 @@ function refreshRuleTopics() {
   }
 }
 function addRule(name='',topics=[],isDefault=false) {
-  const row=el('div','rule-editor'),header=el('div','rule-editor-header'),input=textInput(name,'rule-name','trigger_name');input.required=true;input.pattern='[A-Za-z][A-Za-z0-9_]*';input.setAttribute('aria-label','Trigger 名称');
-  const label=el('label','checkbox-line'),radio=el('input','default-rule');radio.type='radio';radio.name='default-rule';radio.checked=isDefault;label.append(radio,document.createTextNode('默认规则'));
-  const remove=el('button','remove-button','×');remove.type='button';remove.setAttribute('aria-label','删除 trigger 规则');remove.onclick=()=>{row.remove();markDirty();};
+  const row=el('div','rule-editor'),header=el('div','rule-editor-header'),input=textInput(name,'rule-name','robot_type');input.required=true;input.pattern='[A-Za-z][A-Za-z0-9_]*';input.setAttribute('aria-label','机器人类型名称');
+  const label=el('label','checkbox-line'),radio=el('input','default-rule');radio.type='radio';radio.name='default-rule';radio.checked=isDefault;label.append(radio,document.createTextNode('默认类型'));
+  const remove=el('button','remove-button','×');remove.type='button';remove.setAttribute('aria-label','删除机器人类型');remove.onclick=()=>{row.remove();markDirty();};
   header.append(input,label,remove);const options=el('div','rule-topic-options');row.append(header,options);$('rule-rows').append(row);refreshRuleTopics();
   row.querySelectorAll('.rule-topic-options input').forEach(c=>c.checked=topics.includes(c.value));
 }
@@ -116,13 +116,13 @@ function collectConfig() {
   p.topics=normal.map(t=>t.name);p.types=normal.map(t=>t.type);p.reliability=normal.map(t=>t.reliability);p.durability=normal.map(t=>t.durability);p.context_topics=context.map(t=>t.name);p.context_types=context.map(t=>t.type);
   p.trigger_list=[];p.default_trigger='';
   for(const row of $('rule-rows').children){const name=row.querySelector('.rule-name').value.trim();p.trigger_list.push(name);p['triggers.'+name+'.topics']=ruleTopics(row);if(row.querySelector('.default-rule').checked)p.default_trigger=name;}
-  if(!p.trigger_list.length)throw new Error('至少需要一条 trigger 规则');
+  if(!p.trigger_list.length)throw new Error('至少需要一种机器人类型');
   if(!p.default_trigger)p.default_trigger=p.trigger_list[0];
   return p;
 }
 async function saveConfig(event){event.preventDefault();if(!loaded)return;const button=$('save-config');button.disabled=true;try{const saved=await api('/api/config',{parameters:collectConfig(),revision:loaded.revision});fillConfig(saved);$('save-state').textContent='保存成功 · 重启 recorder 后生效';notice('配置已保存，上一版本保留为 .bak。重启 recorder 后应用新配置。');await poll();}catch(e){notice(e.message,'error');}finally{button.disabled=false;}}
-function eventCard(event,details=true){const box=el('div',details?'event-card':''),head=el('div','event-head'),title=el('div','event-title');title.append(el('strong','',event.rule||event.trigger_rule||'未命名规则'),el('span','badge '+event.status,event.status||'UNKNOWN'));head.append(title);if(event.modified_at)head.append(el('span','subtle',new Date(event.modified_at*1000).toLocaleString()));box.append(head);const meta=el('div','event-meta');if(event.message_count!==undefined)meta.append(el('span','',event.message_count.toLocaleString()+' 条消息'));meta.append(el('span','mono',event.event_id||''));box.append(meta);if(details&&event.bag_path)box.append(el('div','event-path mono',event.bag_path));if(event.errors?.length)box.append(el('div','event-errors',event.errors.join(' · ')));return box;}
-async function loadEvents(){try{const result=await api('/api/events');$('event-directory').textContent=result.directory;$('event-list').replaceChildren(...result.events.map(e=>eventCard(e)));if(!result.events.length)$('event-list').append(el('div','panel empty','暂无事件。触发规则后，录制结果会出现在这里。'));}catch(e){notice(e.message,'error');}}
+function eventCard(event,details=true){const box=el('div',details?'event-card':''),head=el('div','event-head'),title=el('div','event-title');title.append(el('strong','',event.rule||event.trigger_rule||'未标注机器人类型'),el('span','badge '+event.status,event.status||'UNKNOWN'));head.append(title);if(event.modified_at)head.append(el('span','subtle',new Date(event.modified_at*1000).toLocaleString()));box.append(head);const meta=el('div','event-meta');if(event.message_count!==undefined)meta.append(el('span','',event.message_count.toLocaleString()+' 条消息'));meta.append(el('span','mono',event.event_id||''));box.append(meta);if(details&&event.bag_path)box.append(el('div','event-path mono',event.bag_path));if(event.errors?.length)box.append(el('div','event-errors',event.errors.join(' · ')));return box;}
+async function loadEvents(){try{const result=await api('/api/events');$('event-directory').textContent=result.directory;$('event-list').replaceChildren(...result.events.map(e=>eventCard(e)));if(!result.events.length)$('event-list').append(el('div','panel empty','暂无事件。触发录制后，录制结果会出现在这里。'));}catch(e){notice(e.message,'error');}}
 async function initialize(){try{fillConfig(await api('/api/config'));if($('auth-dialog').open)$('auth-dialog').close();await poll();}catch(e){notice(e.message,'error');}}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>showTab(b.dataset.tab));document.querySelectorAll('[data-open]').forEach(b=>b.onclick=()=>showTab(b.dataset.open));
 $('config-form').addEventListener('input',markDirty);$('config-form').addEventListener('change',markDirty);$('config-form').addEventListener('submit',saveConfig);

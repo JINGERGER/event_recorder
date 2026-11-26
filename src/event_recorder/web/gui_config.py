@@ -95,7 +95,7 @@ def validate(parameters):
             raise ValueError(f'{key} 应与普通 topic 一一对应')
     names = strings('trigger_list', [])
     if len(set(names)) != len(names) or any(not NAME.fullmatch(n) for n in names):
-        raise ValueError('trigger 名称必须唯一，由字母开头，仅包含字母、数字或下划线')
+        raise ValueError('机器人类型名称必须唯一，由字母开头，仅包含字母、数字或下划线')
     for name in names:
         key = f'triggers.{name}.topics'
         selected = strings(key, [])
@@ -103,7 +103,7 @@ def validate(parameters):
             raise ValueError(f'trigger {name} 必须选择已注册且不重复的 topic')
     p.setdefault('default_trigger', names[0] if names else 'default')
     if p['default_trigger'] not in (names or ['default']):
-        raise ValueError('默认 trigger 必须存在于 trigger list 中')
+        raise ValueError('默认机器人类型必须存在于 trigger list 中')
     allowed = set(TIME_DEFAULTS) | set(BUDGET_DEFAULTS) | {
         'storage_id', 'output_directory', 'use_sim_time', 'topics', 'types', 'context_topics',
         'context_types', 'reliability', 'durability', 'trigger_list', 'default_trigger',

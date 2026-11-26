@@ -15,17 +15,21 @@ event_recorder:
     minimum_free_bytes: 1073741824
     dedup_seconds: 60.0
     trigger_cooldown_seconds: 3.0
-    topics: [/imu/data, /points_raw]
-    types: [sensor_msgs/msg/Imu, sensor_msgs/msg/PointCloud2]
-    reliability: [best_effort, best_effort]
-    durability: [volatile, volatile]
+    # 示例 topic 清单：请按实际驱动的名称、类型和 QoS 调整。
+    # go2 的 /lidar_imu 来自已验证的输入 bag；其他为常见 ROS 标准 topic 示例。
+    topics: [/lidar_imu, /odom, /cmd_vel, /joint_states, /tf]
+    types: [sensor_msgs/msg/Imu, nav_msgs/msg/Odometry, geometry_msgs/msg/Twist, sensor_msgs/msg/JointState, tf2_msgs/msg/TFMessage]
+    reliability: [best_effort, best_effort, best_effort, best_effort, best_effort]
+    durability: [volatile, volatile, volatile, volatile, volatile]
     context_topics: [/tf_static]
     context_types: [tf2_msgs/msg/TFMessage]
-    # 全部数据 topic 的类型在上方注册；规则只选择需要录制的 topic。
-    trigger_list: [motion, perception]
-    default_trigger: motion  # std_srvs/Trigger 服务使用此规则
+    # trigger_list 中的名称表示机器人类型；不自动识别或连接机器人。
+    trigger_list: [go2, bunker_mini, piper]
+    default_trigger: go2  # 通用 std_srvs/Trigger 服务使用的默认机器人类型
     triggers:
-      motion:
-        topics: [/imu/data, /tf_static]
-      perception:
-        topics: [/points_raw, /tf_static]
+      go2:
+        topics: [/lidar_imu, /tf_static]
+      bunker_mini:
+        topics: [/odom, /cmd_vel, /tf_static]
+      piper:
+        topics: [/joint_states, /tf, /tf_static]
