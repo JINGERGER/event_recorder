@@ -41,7 +41,9 @@ sudo apt install ros-humble-rosbag2-storage-mcap
 
 ![Event Recorder Web GUI](docs/gui-overview.png)
 
-界面目前使用中文，包含三个页面：
+界面支持**简体中文和英文**，可在顶部切换，浏览器会记住选择。首次访问跟随浏览器语言（中文浏览器显示中文，其他语言显示英文）。切换不会丢失未保存的编辑，也不影响正在进行的录制。
+
+包含三个页面：
 
 | 页面 | 功能 |
 | --- | --- |

@@ -87,3 +87,15 @@
 - 实际调用 reset 服务后，状态回到 ARMED，距离/样本数归零，请求 ID 更新。
 
 原始分析：[里程计统计](reports/bunker_odom_analysis.json)；验证结果：[20m 触发报告](reports/bunker_distance_20m.json)；使用方法：[示例文档](docs/bunker-distance-demo.md)。本轮不包含真实机器人驾驶、图像/点云压力测试或抗定位跳变算法。
+
+## 2026-11-26：Web UI 中英文切换
+
+构建通过，配置单元测试 3 组通过。真实 ROS + HTTP + Chrome 验收 11 组通过，报告见 [中英文 GUI 验收](reports/gui_i18n.json)。
+
+- 首次语言跟随浏览器；中文浏览器中切换英文后刷新仍保持英文。
+- 控制台、配置、事件页以及访问密钥弹窗支持两种语言，动态状态、触发反馈、配置校验错误随语言切换。日期与消息计数使用所选语言格式；ROS 名称、路径和机器状态码保持原样。
+- 切换保留未保存的参数、新增规则、topic 选择与当前页面，不修改配置文件；插值保留用户值，不作为 HTML 解释。
+- 回归覆盖真实触发、忙时/冷却拒绝、配置保存与版本冲突、重启生效、浏览器关闭后完成录制、密钥访问和离线检测。Chrome 无 JavaScript 错误。
+- 中英文桌面及 390px 手机布局检查通过；默认 go2 / bunker_mini / piper 的[英文截图](docs/gui-overview.en.png)与[中文截图](docs/gui-overview.png)已更新。
+
+本轮没有修改 recorder 核心，也没有重复完整 rosbag、距离样例和性能回归。原始浏览器截图及日志保存在本机 `validation/gui_i18n_20261126_final/`，默认配置截图运行记录位于 `validation/gui_i18n_20261126_preview/`。

@@ -1,0 +1,48 @@
+[
+  {
+    "scenario": "launch_and_live_status",
+    "passed": true,
+    "state": "READY"
+  },
+  {
+    "scenario": "invalid_config_and_request_rejection",
+    "passed": true
+  },
+  {
+    "scenario": "language_browser_default_switch_and_persistence",
+    "passed": true
+  },
+  {
+    "scenario": "browser_trigger_actual_feedback_and_cooldown",
+    "passed": true
+  },
+  {
+    "scenario": "language_preserves_unsaved_form_and_translates_api_errors",
+    "passed": true
+  },
+  {
+    "scenario": "browser_config_save_pending_restart_and_conflict",
+    "passed": true
+  },
+  {
+    "scenario": "desktop_mobile_rendering",
+    "passed": true,
+    "javascript_errors": []
+  },
+  {
+    "scenario": "browser_close_does_not_stop_recording",
+    "passed": true
+  },
+  {
+    "scenario": "saved_configuration_applies_after_restart",
+    "passed": true
+  },
+  {
+    "scenario": "authenticated_browser_access",
+    "passed": true
+  },
+  {
+    "scenario": "offline_detection_and_trigger_blocking",
+    "passed": true
+  }
+]

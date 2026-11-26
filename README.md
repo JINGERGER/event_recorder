@@ -39,9 +39,11 @@ For each new terminal, source ROS and this workspace's `install/setup.bash` befo
 
 ## Web UI
 
-![Event Recorder Web UI](docs/gui-overview.png)
+![Event Recorder Web UI](docs/gui-overview.en.png)
 
-The UI currently uses Chinese labels and provides three pages:
+The UI supports **English and Simplified Chinese**. Use the language selector in the top bar; your choice is remembered in this browser. On first visit it follows the browser language (Chinese → Chinese; otherwise English). Switching languages preserves unsaved edits and ongoing recording.
+
+Three pages are available:
 
 | Page | Purpose |
 | --- | --- |

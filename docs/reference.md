@@ -84,6 +84,8 @@ Trigger service `success` reports actual acceptance. `message` is YAML containin
 
 Configuration saves are validated and atomic, keep one `.bak`, and reject revision conflicts. The GUI requires at least one ordinary topic and omits optional empty arrays for Humble YAML compatibility. It marks the recorder offline after 2 seconds without new status and disables triggering. Buttons use the running configuration until restart.
 
+UI language is a browser-local preference (`recorderLanguage` in local storage), separate from YAML and ROS parameters. English and Simplified Chinese are available in the top-bar selector. Topic names, robot profile names, paths and machine status/error codes remain unchanged. Dates and message counts follow the selected locale.
+
 ## Headless, attached and remote operation
 
 Run the recorder without a browser:

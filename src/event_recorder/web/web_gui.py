@@ -200,6 +200,7 @@ def make_handler(app):
                     return self.send_data(200, routes[path]())
                 files = {'/': ('index.html', 'text/html; charset=utf-8'),
                          '/app.js': ('app.js', 'text/javascript; charset=utf-8'),
+                         '/i18n.js': ('i18n.js', 'text/javascript; charset=utf-8'),
                          '/style.css': ('style.css', 'text/css; charset=utf-8')}
                 if path not in files:
                     raise ApiError(404, '页面不存在')

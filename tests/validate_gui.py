@@ -97,7 +97,7 @@ def main():
             browser = playwright.chromium.launch(executable_path=args.chrome, headless=True,
                 ignore_default_args=['--headless=old'],
                 args=['--headless=new', '--no-sandbox', '--disable-dev-shm-usage'])
-            page = browser.new_page(viewport={'width': 1440, 'height': 1080}, device_scale_factor=1)
+            page = browser.new_page(viewport={'width': 1440, 'height': 1080}, device_scale_factor=1, locale='zh-CN')
             errors = []
             page.on('pageerror', lambda error: (errors.append(str(error)), print('BROWSER ERROR:', error, flush=True)))
             page.goto(base)
@@ -107,6 +107,39 @@ def main():
             expect(page.locator('.trigger-button')).to_have_count(3)
             expect(page.locator('[data-rule="motion"]')).to_be_enabled()
             page.screenshot(path=str(output / 'overview.png'), full_page=True)
+            # Language switching must not mutate ROS/config values or require a reload.
+            expect(page.locator('html')).to_have_attribute('lang', 'zh-CN')
+            page.locator('#language-select').select_option('en')
+            expect(page.locator('#connection')).to_have_text('Recorder connected')
+            expect(page.locator('#state-title')).to_have_text('Ready')
+            expect(page.locator('[data-rule="motion"]')).to_have_text('Trigger recording →')
+            page.screenshot(path=str(output / 'overview-en.png'), full_page=True)
+            page.locator('[data-tab="events"]').click()
+            expect(page.locator('#event-list')).to_contain_text('No events yet.')
+            page.locator('[data-tab="configuration"]').click()
+            expect(page.locator('#save-config')).to_have_text('Save configuration')
+            # All marked static labels and generated accessibility labels have
+            # translations; diagnostics retain exact parameter/user values.
+            untranslated = page.evaluate("""() => [...document.querySelectorAll('[data-i18n], [data-i18n-aria-label]')]
+                .map(n => n.dataset.i18n || n.dataset.i18nAriaLabel)
+                .filter(key => /[\u4e00-\u9fff]/.test(t(key)))""")
+            assert not untranslated, untranslated
+            assert page.evaluate("t('history_bytes 必须是正整数')") == 'history_bytes must be a positive integer'
+            assert page.evaluate("t('trigger go2 必须选择已注册且不重复的 topic')") == 'Trigger go2 must select registered topics without duplicates'
+            assert page.evaluate("t('constructor')") == 'constructor'
+            assert page.evaluate("t('已接受 {rule}，事件 {id}', {rule:'<b>{id}</b>',id:'original'})") == 'Accepted <b>{id}</b>, event original'
+
+            expect(page.locator('.topic-name').first).to_have_attribute('aria-label', 'Topic name')
+            page.screenshot(path=str(output / 'configuration-en.png'), full_page=True)
+            assert request('/api/config')[1]['revision'] == original['revision']
+            page.reload()
+            expect(page.locator('html')).to_have_attribute('lang', 'en')
+            expect(page.locator('#connection')).to_have_text('Recorder connected')
+            assert page.evaluate('navigator.language') == 'zh-CN'
+            page.locator('#language-select').select_option('zh-CN')
+            expect(page.locator('#state-title')).to_have_text('准备就绪')
+            passed('language_browser_default_switch_and_persistence')
+
             page.locator('[data-rule="motion"]').click()
             expect(page.locator('#notice')).to_contain_text('已接受 motion')
             expect(page.locator('#state-title')).to_have_text('录制中')
@@ -119,14 +152,43 @@ def main():
             expect(page.locator('#state-title')).to_have_text('准备就绪', timeout=5000)
             page.locator('[data-rule="perception"]').click()
             expect(page.locator('#notice')).to_contain_text('已接受 perception')
+            page.locator('#language-select').select_option('en')
+            expect(page.locator('#notice')).to_contain_text('Accepted perception, event ')
+            expect(page.locator('[data-rule="motion"]')).to_be_disabled()
+
             page.locator('[data-tab="events"]').click()
             expect(page.locator('#event-list')).to_contain_text('motion')
             expect(page.locator('#event-list')).to_contain_text('COMPLETED', timeout=5000)
+            expect(page.locator('#event-list')).to_contain_text('Messages:')
+            page.locator('#language-select').select_option('zh-CN')
             passed('browser_trigger_actual_feedback_and_cooldown')
             page.locator('[data-tab="configuration"]').click()
             page.locator('#discover').click()
             expect(page.locator('#discovered')).to_contain_text('/test/other')
             page.locator('#post_trigger_seconds').fill('1.8')
+            # Preserve unsaved values, added rows, selections and current tab.
+            page.locator('#add-rule').click()
+            page.locator('.rule-name').last.fill('unsaved_robot')
+            draft = page.evaluate('collectConfig()')
+            page.locator('#language-select').select_option('en')
+            expect(page.locator('#configuration')).to_be_visible()
+            expect(page.locator('#config-dirty')).to_have_text('Unsaved changes')
+            assert page.evaluate('collectConfig()') == draft
+            page.locator('#language-select').select_option('zh-CN')
+            assert page.evaluate('collectConfig()') == draft
+            page.locator('#rule-rows .remove-button').last.click()
+            # Exercise a real server validation error in English, then translate
+            # the same notice back without another save request.
+            page.locator('#language-select').select_option('en')
+            page.locator('#history_retention_seconds').fill('0.1')
+            page.locator('#save-config').click()
+            expect(page.locator('#notice')).to_have_text('History retention must be at least the pre-trigger window')
+            assert request('/api/config')[1]['revision'] == original['revision']
+            page.locator('#language-select').select_option('zh-CN')
+            expect(page.locator('#notice')).to_have_text('历史保留时间不能小于前置窗口')
+            page.locator('#history_retention_seconds').fill('2.0')
+            passed('language_preserves_unsaved_form_and_translates_api_errors')
+
             page.locator('#save-config').click()
             expect(page.locator('#save-state')).to_have_text('保存成功 · 重启 recorder 后生效')
             snapshot = request('/api/state')[1]
@@ -136,6 +198,17 @@ def main():
             assert request('/api/config', {'parameters': original['parameters'], 'revision': original['revision']})[0] == 409
             page.screenshot(path=str(output / 'configuration.png'), full_page=True)
             passed('browser_config_save_pending_restart_and_conflict')
+            page.locator('#language-select').select_option('en')
+            expect(page.locator('#save-state')).to_have_text('Saved · restart the recorder to apply')
+            expect(page.locator('#notice')).to_contain_text('Configuration saved;')
+            page.set_viewport_size({'width': 390, 'height': 844})
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), 'English configuration overflow'
+            page.screenshot(path=str(output / 'configuration-mobile-en.png'), full_page=True)
+            page.locator('[data-tab="overview"]').click()
+            assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), 'English overview overflow'
+            page.screenshot(path=str(output / 'mobile-en.png'), full_page=True)
+            page.locator('#language-select').select_option('zh-CN')
+
             page.set_viewport_size({'width': 390, 'height': 844})
             page.locator('[data-tab="overview"]').click()
             assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), 'mobile horizontal overflow'
@@ -175,17 +248,19 @@ def main():
             browser = playwright.chromium.launch(executable_path=args.chrome, headless=True,
                 ignore_default_args=['--headless=old'],
                 args=['--headless=new', '--no-sandbox', '--disable-dev-shm-usage'])
-            page = browser.new_page(viewport={'width': 1280, 'height': 900})
+            page = browser.new_page(viewport={'width': 1280, 'height': 900}, locale='en-US')
             page.goto(base)
             expect(page.locator('#auth-dialog')).to_be_visible()
+            expect(page.locator('html')).to_have_attribute('lang', 'en')
+            expect(page.locator('#auth-dialog h2')).to_have_text('Connect to console')
             page.locator('#access-token').fill('gui-test-only-token')
             page.locator('#auth-form button').click()
-            expect(page.locator('#connection')).to_have_text('录制器已连接')
+            expect(page.locator('#connection')).to_have_text('Recorder connected')
             assert 'on' in request('/api/state')[1]['recorder']['rules']
             passed('authenticated_browser_access')
             pid = int(re.search(r'\[recorder-1\]: process started with pid \[(\d+)\]', (output / 'restart.log').read_text()).group(1))
             os.kill(pid, signal.SIGINT)
-            expect(page.locator('#connection')).to_have_text('录制器离线', timeout=7000)
+            expect(page.locator('#connection')).to_have_text('Recorder offline', timeout=7000)
             for button in page.locator('.trigger-button').all():
                 expect(button).to_be_disabled()
             assert request('/api/trigger', {'rule': 'motion'})[0] == 503
