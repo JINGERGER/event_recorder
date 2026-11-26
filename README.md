@@ -1,220 +1,167 @@
-# ROS 2 事件录制器
+# ROS 2 Event Recorder
 
-实现 `ros2_data_recorder_design.md` 的接收时间方案，目标平台为 Ubuntu 22.04 / ROS 2 Humble，C++17。v0.2 按最新需求改为命名 trigger 规则、单事件互斥、窗口结束后 3 秒冷却，取代原设计中的连续触发合并。
+**English** | [简体中文](README.zh-CN.md)
 
-持续接收配置的 topic，默认触发前 5 秒、后 10 秒，保留 8 秒历史。使用单调时钟划窗，ROS 接收时间作为 bag 时间戳；不解析传感器时间做窗口判断。通用序列化订阅无需为每种传感器类型重新编译，但运行环境必须安装相应消息类型支持。
+Record what happened **before and after an event**. The recorder continuously buffers ROS 2 topics in memory and writes a replayable rosbag when triggered—from the Web UI, a ROS service/topic, or an external detector.
 
-## 构建与运行
+Default behavior: **5 seconds before + 10 seconds after**, an **8-second history buffer**, and a **3-second cooldown** after each capture window. Only one event can be active or finalizing at a time.
+
+- Robot profiles: `go2`, `bunker_mini`, and `piper`, each with configurable topics.
+- MCAP and SQLite3 storage, static TF context, and per-event completeness metadata.
+- Lightweight Web UI for configuration, triggering, status, and event history. No Node.js, frontend build, or database required.
+- Included example: trigger `bunker_mini` after cumulative odometry travel exceeds 20 m.
+
+## Quick start
+
+**Requirements:** Ubuntu 22.04, ROS 2 Humble, `colcon`, and an initialized `rosdep`. The recorder uses C++17; the Web UI uses Python 3 and the ROS environment. Custom message types must be installed on the recording machine.
 
 ```bash
 source /opt/ros/humble/setup.bash
+
+git clone https://github.com/JINGERGER/event_recorder.git
+cd event_recorder
+rosdep install --from-paths src --ignore-src --rosdistro humble -r -y
 colcon build --packages-select event_recorder
 source install/setup.bash
-ros2 run event_recorder recorder --ros-args \
-  --params-file src/event_recorder/config/recorder.yaml
-```
 
-在配置中将 `topics`、`types` 改为目标 topic 及其完整消息类型；`reliability` 和 `durability` 与 topic 数组一一对应，省略时分别为 `best_effort` 和 `volatile`。默认示例注册 `/lidar_imu`、`/odom`、`/cmd_vel`、`/joint_states`、`/tf` 和 `/tf_static`。上下文 topic 使用 reliable/transient-local；普通 topic 可分别配置 QoS。
-
-## 轻量 Web GUI（v0.3）
-
-![Web GUI 控制台（默认机器人类型配置）](docs/gui-overview.png)
-
-无需 Node.js、npm 或数据库。运行依赖为 ROS 2 自带的 rclpy、std_msgs、std_srvs、launch_ros，以及 Python PyYAML。构建后在工作目录执行：
-
-```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
 ros2 launch event_recorder gui.launch.py
 ```
 
-浏览器打开 **http://127.0.0.1:8080**。首次启动会在当前目录创建可写的 `recorder.local.yaml`（从示例配置复制），recorder 和 GUI 共同使用这个文件。后续启动保留文件内容，不会覆盖已保存配置。也可以指定路径和端口：
+Open **http://127.0.0.1:8080**. The launch starts both the recorder and the Web UI. On first use, it copies the example configuration to `recorder.local.yaml` in the current directory; subsequent launches keep your changes.
+
+The example configuration uses MCAP. Its plugin is declared as a package dependency; it can also be installed explicitly:
 
 ```bash
-ros2 launch event_recorder gui.launch.py \
-  config:=/home/nezha/recorder.local.yaml port:=8080
+sudo apt install ros-humble-rosbag2-storage-mcap
 ```
 
-- **录制控制台**：运行状态、后置窗口/冷却倒计时、历史缓存与写盘队列、输入丢弃与触发拒绝计数；每种运行配置中的机器人对应一个触发按钮。按钮等待 recorder 的实际反馈，显示接受的事件 ID 或拒绝原因。
-- **机器人与配置**：编辑数据 topic、类型与 QoS，或从 ROS graph 发现 topic；管理机器人类型与录制 topic 清单；设置窗口、存储目录、格式及内存预算。保存会校验配置、检测并发修改并保留一份 `.bak`。
-- **事件记录**：显示输出目录内最近 100 个事件，含规则、消息数、完整性状态、错误及 bag 路径。没有删除文件或停止录制的操作。
+For each new terminal, source ROS and this workspace's `install/setup.bash` before running project commands.
 
-保存配置**不热更新、不重启节点**。页面会提示“待重启”，录制按钮继续使用运行中的规则。完成当前录制后，在启动终端 Ctrl+C，再重新运行同一条 launch 命令使配置生效。不要在录制过程中重启，否则当前窗口会被标记截断。
+## Web UI
 
-浏览器关闭不影响录制。Web 服务与 recorder 是独立进程；单独停止 Web 服务也不会停止 recorder。停止整个 launch 则会正常关闭这两个进程。
+![Event Recorder Web UI](docs/gui-overview.png)
 
-如已有独立运行的 recorder，只启动 GUI 并指定它的配置文件：
+The UI currently uses Chinese labels and provides three pages:
+
+| Page | Purpose |
+| --- | --- |
+| Recording console | Trigger a robot profile; view capture/cooldown state, buffer usage, queue size, and drop counts. |
+| Robots & configuration | Register topics and types, select QoS, edit robot profiles, and set time windows and resource budgets. |
+| Event history | Inspect the latest 100 events, completion status, errors, message counts, and bag paths. |
+
+**Saving configuration does not change the running recorder.** Finish the current event, stop the launch with Ctrl+C, and launch it again to apply changes. The UI distinguishes saved settings from the running configuration.
+
+Closing the browser does not stop recording. Stopping the entire launch stops both processes. To choose another configuration or port:
 
 ```bash
-ros2 run event_recorder web_gui --config /absolute/path/recorder.yaml
-# recorder 在其他 namespace 时追加 --recorder /robot/event_recorder
+ros2 launch event_recorder gui.launch.py config:=/path/to/recorder.yaml port:=8081
 ```
 
-不要同时启动两个同名 recorder。GUI 和 recorder 应使用同一 ROS_DOMAIN_ID 和 RMW 配置；查看的事件文件也应在 GUI 主机可访问的输出目录中。GUI 默认和 recorder 运行在同一台设备上。
-
-### 从笔记本访问 Orin
-
-默认只监听设备本机。可以在笔记本建立 SSH 隧道，再访问笔记本的 localhost:8080：
+For access from a laptop to an Orin or another remote host, keep the default localhost binding and forward the port:
 
 ```bash
-ssh -L 8080:127.0.0.1:8080 user@orin-ip
+ssh -L 8080:127.0.0.1:8080 user@robot-host
 ```
 
-需要直接监听可信局域网时，设置访问密钥（在页面输入），然后指定 host：
+Open localhost:8080 on the laptop. Direct LAN access and attaching the UI to an existing recorder are covered in the [reference guide](docs/reference.md).
 
-```bash
-export EVENT_RECORDER_GUI_TOKEN='替换为你自己的长随机密钥'
-ros2 launch event_recorder gui.launch.py host:=0.0.0.0
-```
+## Configure robot profiles
 
-直接局域网模式使用 HTTP，不提供 TLS；需要加密时使用 SSH 隧道。GUI 不依赖 CDN，页面资源全部本地提供。
+Robot names identify **recording profiles**, not ROS topics or automatic robot detection. The default mappings are:
 
-### ROS / HTTP 接口
+| Profile | Example recorded topics |
+| --- | --- |
+| `go2` | `/lidar_imu`, `/tf_static` |
+| `bunker_mini` | `/odom`, `/cmd_vel`, `/tf_static` |
+| `piper` | `/joint_states`, `/tf`, `/tf_static` |
 
-- `/event_recorder/status`：`std_msgs/msg/String`，5Hz YAML 状态快照，reliable/transient-local；包含运行配置、规则、缓存/队列、最近完成事件。超过 2 秒未收到新状态时 GUI 显示离线并禁用触发。
-- `/event_recorder/triggers/<机器人类型名称>`：`std_srvs/srv/Trigger`，返回实际接受结果；通用 `/event_recorder/trigger` 服务使用 default_trigger。原 topic 触发入口保持兼容。
-- HTTP `GET /api/state`、`/api/config`、`/api/topics`、`/api/events`；`POST /api/trigger`（`{"rule":"go2"}`）、`/api/config`（parameters 与 revision）。后者保存文件，触发接口不会自行重试。若回应超时，页面会提示结果未知，需检查状态。
+Edit them in the UI or in `recorder.local.yaml`. The [example YAML](src/event_recorder/config/recorder.yaml) shows the full format: register topic names/types/QoS first, then select topics under `triggers.<robot_type>.topics`. Include context topics such as `/tf_static` explicitly in each profile that needs them.
 
-## 自动触发示例：Bunker Mini 累计行驶 20 米
+These are editable examples, not complete robot-driver integrations. Verify names, message types, and QoS against your actual drivers. If multiple robots publish simultaneously, use appropriate topic namespaces; profile names alone do not separate same-named topics.
 
-已提供独立的 `odom_distance_trigger` 节点：累计 `/odom` 相邻位置的 XY 平面距离，首次超过 20 米时向 recorder 发送一次 `bunker_mini` 触发请求。你的 `rosbag2_2025_12_24-21_12_52` 可用于回放验证。
+## Trigger a recording
 
-```bash
-# 先 source ROS 与 install/setup.bash；回放终端使用相同 domain
-ROS_DOMAIN_ID=90 ROS_LOCALHOST_ONLY=1 \
-  ros2 launch event_recorder bunker_distance_demo.launch.py port:=8081
-```
-
-示例包含专用录制配置、GUI、显式重置服务和真实 bag 验证脚本。启动后再回放，约 206.76 秒累计达到 20 米；4 倍速约 52 秒。完整操作见 [Bunker Mini 距离触发示例](docs/bunker-distance-demo.md)。
-
-## 机器人类型（Trigger list）
-
-所有数据 topic 的名称、类型及 QoS 在顶层统一注册，持续订阅并共享一份历史缓存；`trigger_list` 按机器人类型管理配置，每种机器人的 `topics` 决定实际写入 bag 的数据。机器人类型只是录制配置的名称，不会自动识别机器人或执行异常检测；底层 `rule` / `trigger_rule` 字段和接口保持兼容。上下文 topic（例如 `/tf_static`）也需要显式选入规则。
-
-```yaml
-event_recorder:
-  ros__parameters:
-    # topics/types/reliability/durability/context_topics 等仍按示例配置注册
-    trigger_cooldown_seconds: 3.0
-    trigger_list: [go2, bunker_mini, piper]
-    default_trigger: go2
-    triggers:
-      go2:
-        topics: [/lidar_imu, /tf_static]
-      bunker_mini:
-        topics: [/odom, /cmd_vel, /tf_static]
-      piper:
-        topics: [/joint_states, /tf, /tf_static]
-```
-
-**示例 topic 需要按实际驱动确认**：`/lidar_imu` 来自之前验证的 Go2 bag，其他为标准 ROS topic 示例，尚未在 Bunker Mini/Piper 实机上验证。可在 GUI 中修改；如果多个机器人同时运行，应给 topic 配置独立 namespace，类型名称本身不会隔离同名 topic。
-
-统一入口 `/event_recorder/trigger` 使用 `std_msgs/msg/String`，格式为 **`机器人类型名称|请求ID|原因`**。机器人类型名称只允许字母开头、后续字母/数字/下划线，名称区分大小写。请求 ID 为空时不去重；也可以只发送机器人类型名称匿名触发。
+Use a UI button, or publish `std_msgs/msg/String` to `/event_recorder/trigger`:
 
 ```bash
 ros2 topic pub --once /event_recorder/trigger std_msgs/msg/String \
   "{data: 'go2|alarm-001|robot anomaly'}"
-ros2 topic pub --once /event_recorder/trigger std_msgs/msg/String \
-  "{data: 'bunker_mini|alarm-002|chassis anomaly'}"
-# 匿名触发指定规则：
-ros2 topic pub --once /event_recorder/trigger std_msgs/msg/String "{data: 'piper'}"
-# 服务触发配置中的 default_trigger：
-ros2 service call /event_recorder/trigger std_srvs/srv/Trigger '{}'
 ```
 
-全局同时仅允许一个事件，行为如下：
+The `data` format is `robot_type|request_id|reason`:
 
-1. 空闲时接受有效规则，录制该规则选中的 topic，窗口仍为接收时间的前 5 秒 / 后 10 秒。
-2. 录制窗口内所有新 trigger（包括同一规则）均被拒绝，不合并、不延长窗口。
-3. 窗口结束后从目标截止时间开始休眠 3 秒；如果旧事件还未完成写盘，则继续拒绝新 trigger。
-4. 冷却结束且写盘完成后，才允许接受下一次 trigger。被拒绝的请求不会等待条件满足后自动执行，发送方需要重新发起。
+| Field | Meaning |
+| --- | --- |
+| `robot_type` | Selects a configured profile, such as `go2`. |
+| `request_id` | Identifies this request. Accepted IDs are deduplicated within the same profile for 60 seconds by default. |
+| `reason` | Saved in the event metadata for traceability. |
 
-例如 T=100s 接受 go2，录制窗口为 [95s,110s]，最早在 113s 接受下一次 trigger（若写盘完成）。期间 bunker_mini 请求会被拒绝，既不会加入当前 bag，也不会自动创建后续 bag。缓存仍持续更新，因此下一次规则也能获得前置历史。
-
-默认 60 秒内按 `(机器人类型名称, 请求ID)` 去重，只有已接受的请求进入去重缓存；不同规则可以使用相同 ID。未知规则、未注册 topic、重复机器人类型名称、空 topic 清单等会被拒绝或使启动失败。日志区分 `busy`、`cooldown`、`finalizing`、`duplicate_id` 等原因，事件元数据保存 `trigger_rule`、选中的 topic、冷却截止时间及累计拒绝数量。
-
-v0.3 起，服务返回的 success 表示事件管理器已经实际接受/拒绝本次触发；message 是包含 accepted、rule、event_id 和 reason 的 YAML。服务位于独立回调组，等待结果不会阻塞数据订阅。内部队列用于串行判定，不会保留被拒绝的请求等待重试。时间戳定义为进入排序入口的接收时间。
-
-兼容旧配置：未配置 `trigger_list` 时隐式创建 `default` 规则，选择所有已注册 topic；字符串继续支持旧的 `请求ID|原因` / 匿名原因格式。**旧配置也遵循新的单事件和 3 秒冷却策略，不再合并触发。**
-
-录制结果位于 `event_bags/<event_id>/`，旁边的 `<event_id>.event.yaml` 记录触发、窗口、实际写入数、首末接收时间、上下文注入、配置和错误。`COMPLETED` 表示关闭成功且没有检测到本地缺失；`PARTIAL` 表示已写盘但已知不完整；`FAILED` 表示存储失败。进程崩溃遗留的 `CAPTURING` 文件不能视为完成。
+Publishing only the profile name, such as `data: 'piper'`, sends an anonymous request without ID deduplication. For an explicit acceptance/rejection response, use the profile's service:
 
 ```bash
-ros2 bag info event_bags/<event_id>
-ros2 bag play event_bags/<event_id>
+ros2 service call /event_recorder/triggers/go2 std_srvs/srv/Trigger '{}'
 ```
 
-本机已安装 `ros-humble-rosbag2-storage-mcap`（0.15.17）。示例配置默认 `storage_id: mcap`，也可改为 `sqlite3`；不加载配置文件直接启动节点时仍默认 SQLite3。安装命令：`sudo apt-get install ros-humble-rosbag2-storage-mcap`。
+New triggers are **rejected while capturing, during cooldown, or while the previous event is still being written**. They are not deferred, merged, or used to extend the window. For example, a trigger accepted at T=100 captures [95,110]; the next trigger can be accepted at T=113 at the earliest, provided writing has finished.
 
-## 行为与资源限制
+## Example: Bunker Mini travels 20 m
 
-- 输入入口在同一互斥区内采样时间、分配序号、入队；消息、触发、结束检查由一个管理线程串行处理，Writer 由另一个线程独占。
-- 历史、输入、写盘、上下文缓存均有字节和条数限制；共享不可变 payload，Writer 使用保持原始所有权的别名引用。写盘控制操作不丢弃，全局最多一个活动或写盘中的事件；保留 `max_pending_events` 参数兼容旧配置，但它不会开启并发事件。
-- 输入/写盘过载丢弃新消息，历史容量不足淘汰最旧消息；受影响事件标记不完整。触发队列或待完成事件容量耗尽时拒绝触发并记录日志和计数。消息数为零不自动判定丢包。
-- 默认 `max_event_seconds` 为 300 秒，启动时要求前置加后置时长不超过此值。新策略不再延长窗口，因此不需要连续触发截断或分段。
-- `/tf_static` 按 child frame 保存静态变换，保留窗口起点之前的基线和窗口内更新。其他上下文 topic 采用整条消息替换基线，适用于单一完整状态，不能代替多发布者增量状态的专用聚合器。
-- 上下文采用原始接收 ROS 时间注入，并记录原始时间及注入标记，因此含上下文的 bag 总时长可能超过目标窗口。窗口完整性要检查普通消息和元数据。
-- ROS 与单调时间增量相差超过 100ms 时记录 `ros_clock_jump`；窗口仍按单调时间运行。`use_sim_time` 可影响 bag 时间戳，但不改变窗口语义。
-- 磁盘剩余空间低于阈值或 Writer 抛出异常时标记 FAILED，正常退出排空已接收数据和写盘任务，未结束窗口标记截断。存储完全不可写时，元数据也可能无法保存，错误会输出到日志。
-- 配置在启动时读取，修改参数后应重启。未实现可选的采集时间模式、独立重叠事件和崩溃前历史持久化。
+The example detector sums successive `/odom` XY position increments and sends one `bunker_mini` trigger when cumulative travel first exceeds 20 m. This is **path length**, not straight-line distance from the start.
 
-字节预算计入 payload capacity 和固定消息开销，**不等于进程 RSS 硬上限**：DDS 队列、容器分配、单个处理中消息、类型反序列化临时对象和存储插件仍占额外内存。上下文快照还可临时增加约一个上下文预算。请根据真实图像/点云速率测量并调整。
+In two terminals sourced with the ROS/workspace environment, run:
 
-完整性标记只覆盖 recorder 可观测的本地缺失，不保证 DDS 之前未丢包；端到端完整性需要发布端序号。输入/历史丢弃按当前规则选中的 topic 判断，未选中 topic 的丢弃不会直接将当前事件标为 PARTIAL；共享缓存容量仍可能影响其他 topic 的保留时间。时间水位采用保守判断，可能将邻近事件判为 PARTIAL。
-
-## 自动验证
-
-依赖 Humble 的 `rclpy`、`rosbag2_py`、`sensor_msgs`、`tf2_msgs` 和 Python PyYAML。使用独立 DDS domain 避免干扰现有系统：
+**Terminal 1 — recorder, Web UI, and detector:**
 
 ```bash
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1 ROS_LOG_DIR=/tmp/event_recorder_ros_logs \
-  /usr/bin/python3 tests/validate_rosbag.py --storage mcap \
-  --real-bag /home/nezha/Documents/rosbag2_2025_07_29-18_14_13
+export ROS_DOMAIN_ID=90 ROS_LOCALHOST_ONLY=1
+ros2 launch event_recorder bunker_distance_demo.launch.py port:=8081
 ```
 
-`--real-bag` 可省略；若提供，输入 bag 应包含 `/lidar_imu` (`sensor_msgs/msg/Imu`)。脚本通过真实 DDS 发布递增序号消息，读取 rosbag2 校验窗口、连续性和重复，调用 `ros2 bag info` 和 `ros2 bag play` 校验实际回放。真实 bag 测试回放原始 IMU，并核对录制结果为源数据中的连续片段。每次输出保存在 `validation/<时间>/`，含 bag、事件元数据、日志及 `report.json`。
-
-## 负载测量
-
-`tests/benchmark_recorder.py` 从 `/proc/<pid>/stat` 每 200ms 采样 recorder 进程，分别统计空闲、缓存和录制阶段的 CPU 与 RSS。CPU 的 100% 表示一个逻辑核，不包括发布器/回放器。测试源为约 200Hz IMU 和 reliable QoS 下每帧 1MiB、20Hz 的合成图像；图像录制数量必须接近 15 秒窗口的 300 帧，否则基准失败。
+**Terminal 2 — replay the source bag after the demo is ready:**
 
 ```bash
-ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1 ROS_LOG_DIR=/tmp/event_recorder_ros_logs \
-  /usr/bin/python3 tests/benchmark_recorder.py --storage mcap \
-  --output validation/my_mcap_benchmark \
-  --real-bag /home/nezha/Documents/rosbag2_2025_07_29-18_14_13
+export ROS_DOMAIN_ID=90 ROS_LOCALHOST_ONLY=1
+ros2 bag play /path/to/rosbag2_2025_12_24-21_12_52 \
+  --rate 4 --delay 2 --disable-keyboard-controls \
+  --topics /odom /imu/data_raw /scan /tf /tf_static
 ```
 
-性能数据及适用范围见 [PERFORMANCE.md](PERFORMANCE.md)。
+Open **http://127.0.0.1:8081**. The source bag is not included in this repository. With the validated bag, the trigger occurs at **20.001397 m**, about **207 seconds at normal speed** or **52 seconds at 4× speed**. The recorder's window remains 15 seconds of reception time, so accelerated replay covers a longer interval of source data.
 
-命名 trigger 专项验证（两种存储均支持）：
+See the [complete example guide](docs/bunker-distance-demo.en.md) for reset commands, detector parameters, and verification results.
+
+## Output and operating limits
+
+Each event produces a bag directory and a neighboring metadata file:
+
+```text
+event_bags/
+├── <event_id>/             # rosbag2 files and metadata.yaml
+└── <event_id>.event.yaml   # trigger, selected topics, counts, completeness, errors
+```
+
+`COMPLETED` means writing finished without detected local incompleteness. `PARTIAL` means known missing/truncated data; `FAILED` means an error prevented successful recording. A leftover `CAPTURING` state is not a completed event.
 
 ```bash
-ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1 ROS_LOG_DIR=/tmp/event_recorder_ros_logs \
-  /usr/bin/python3 tests/validate_triggers.py --storage mcap \
-  --output validation/my_trigger_checks
+EVENT_ID=your_event_id
+ros2 bag info "event_bags/$EVENT_ID"
+ros2 bag play "event_bags/$EVENT_ID"
 ```
 
-专项测试覆盖 topic 隔离、静态上下文选择、忙时拒绝、完整 3 秒冷却及边界前拒绝、不延迟重放、规则内去重、跨规则相同 ID、未选中 topic 丢弃隔离和错误配置拒绝。
+Windows use **monotonic reception time**; bag timestamps use ROS reception time. History resides in RAM and is not crash-persistent. Payload memory is roughly `input rate × history duration`: 100 MiB/s for 8 seconds needs about 800 MiB before other overhead, exceeding the default 256 MiB history budget. Adjust budgets and measure on the deployment hardware.
 
-### GUI 验证
+## Documentation and validation
 
-配置校验单元测试无需浏览器：
+| Document | Contents |
+| --- | --- |
+| [Reference guide](docs/reference.md) | Parameters, ROS/HTTP APIs, remote access, recording semantics, and test commands. |
+| [Bunker Mini example](docs/bunker-distance-demo.en.md) | Complete 20 m trigger walkthrough. |
+| [Validation record](VALIDATION.md) · Chinese | Recorded test results and their limits. |
+| [Performance measurements](PERFORMANCE.md) · Chinese | Historical v0.1 CPU/RAM measurements; not a benchmark of the current version. |
+| [Machine-readable reports](reports/) | Acceptance, GUI, performance, and real-bag test evidence. |
 
-```bash
-/usr/bin/python3 tests/test_gui_config.py
-```
+Builds and tests were run on Ubuntu 22.04 / ROS 2 Humble, including real ROS transport, MCAP/SQLite3 checks, and Chrome GUI tests. AGX Orin deployment has not yet been validated. The [original design](ros2_data_recorder_design.md) is historical; its trigger-merging policy is superseded by the single-event behavior described here.
 
-浏览器验收的 Playwright 仅是测试依赖，不是 GUI 运行依赖。使用系统已安装的 Chrome（可通过 `--chrome` 指定）：
+## License
 
-```bash
-/usr/bin/python3 -m pip install --target /tmp/event-recorder-browser-deps playwright==1.48.0
-# 先 source ROS 与 install/setup.bash
-PYTHONPATH=/tmp/event-recorder-browser-deps:$PYTHONPATH \
-ROS_DOMAIN_ID=87 ROS_LOCALHOST_ONLY=1 ROS_LOG_DIR=/tmp/event_recorder_ros_logs \
-  /usr/bin/python3 tests/validate_gui.py --output validation/my_gui_checks
-```
-
-测试覆盖实际服务反馈、冷却禁用按钮、配置并发修改、重启生效、访问密钥、离线检测、桌面/手机布局和关闭浏览器后的持续录制。结果与截图保存在指定目录。GUI 当前要求至少注册一个普通数据 topic；保存时自动省略可选的空数组，以兼容 Humble 的参数 YAML 解析器。
+[Apache License 2.0](LICENSE).

@@ -1,5 +1,7 @@
 # Bunker Mini：累计行驶超过 20 米自动触发
 
+[English](bunker-distance-demo.en.md) | **简体中文** · [返回首页](../README.zh-CN.md)
+
 本示例使用 `rosbag2_2025_12_24-21_12_52` 中的 `/odom`（`nav_msgs/msg/Odometry`），累加相邻有效消息的位置平面增量：
 
 ```text
@@ -23,10 +25,11 @@ JSON 详情包含阈值、实际累计距离、起点/当前位置、frame、消
 
 ## 启动示例
 
-先完成构建：
+源 bag 不包含在仓库中，请将下面的 `/path/to/rosbag2_2025_12_24-21_12_52` 替换为实际路径。
+
+在仓库根目录先完成构建：
 
 ```bash
-cd /home/nezha/Documents/postman
 source /opt/ros/humble/setup.bash
 colcon build --packages-select event_recorder
 source install/setup.bash
@@ -48,7 +51,7 @@ ros2 launch event_recorder bunker_distance_demo.launch.py port:=8081
 ```bash
 source /opt/ros/humble/setup.bash
 export ROS_DOMAIN_ID=90 ROS_LOCALHOST_ONLY=1
-ros2 bag play /home/nezha/Documents/rosbag2_2025_12_24-21_12_52 \
+ros2 bag play /path/to/rosbag2_2025_12_24-21_12_52 \
   --delay 2 --disable-keyboard-controls \
   --topics /odom /imu/data_raw /scan /tf /tf_static
 ```
@@ -103,7 +106,7 @@ source install/setup.bash
 /usr/bin/python3 tests/test_distance_accumulator.py
 ROS_DOMAIN_ID=90 ROS_LOCALHOST_ONLY=1 ROS_LOG_DIR=/tmp/event_recorder_ros_logs \
   /usr/bin/python3 tests/validate_bunker_distance.py \
-  --bag /home/nezha/Documents/rosbag2_2025_12_24-21_12_52 \
+  --bag /path/to/rosbag2_2025_12_24-21_12_52 \
   --output validation/my_bunker_distance_test --rate 4
 ```
 
