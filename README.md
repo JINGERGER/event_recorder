@@ -75,6 +75,18 @@ ros2 launch event_recorder gui.launch.py host:=0.0.0.0
 - `/event_recorder/triggers/<机器人类型名称>`：`std_srvs/srv/Trigger`，返回实际接受结果；通用 `/event_recorder/trigger` 服务使用 default_trigger。原 topic 触发入口保持兼容。
 - HTTP `GET /api/state`、`/api/config`、`/api/topics`、`/api/events`；`POST /api/trigger`（`{"rule":"go2"}`）、`/api/config`（parameters 与 revision）。后者保存文件，触发接口不会自行重试。若回应超时，页面会提示结果未知，需检查状态。
 
+## 自动触发示例：Bunker Mini 累计行驶 20 米
+
+已提供独立的 `odom_distance_trigger` 节点：累计 `/odom` 相邻位置的 XY 平面距离，首次超过 20 米时向 recorder 发送一次 `bunker_mini` 触发请求。你的 `rosbag2_2025_12_24-21_12_52` 可用于回放验证。
+
+```bash
+# 先 source ROS 与 install/setup.bash；回放终端使用相同 domain
+ROS_DOMAIN_ID=90 ROS_LOCALHOST_ONLY=1 \
+  ros2 launch event_recorder bunker_distance_demo.launch.py port:=8081
+```
+
+示例包含专用录制配置、GUI、显式重置服务和真实 bag 验证脚本。启动后再回放，约 206.76 秒累计达到 20 米；4 倍速约 52 秒。完整操作见 [Bunker Mini 距离触发示例](docs/bunker-distance-demo.md)。
+
 ## 机器人类型（Trigger list）
 
 所有数据 topic 的名称、类型及 QoS 在顶层统一注册，持续订阅并共享一份历史缓存；`trigger_list` 按机器人类型管理配置，每种机器人的 `topics` 决定实际写入 bag 的数据。机器人类型只是录制配置的名称，不会自动识别机器人或执行异常检测；底层 `rule` / `trigger_rule` 字段和接口保持兼容。上下文 topic（例如 `/tf_static`）也需要显式选入规则。

@@ -1,0 +1,47 @@
+{
+  "passed": true,
+  "source_bag": "/home/nezha/Documents/rosbag2_2025_12_24-21_12_52",
+  "playback_rate": 4.0,
+  "reference": {
+    "source_messages": 14473,
+    "total_path_m": 32.621083616500826,
+    "maximum_displacement_m": 10.809162976391004,
+    "first_crossing": {
+      "source_index": 10344,
+      "distance_m": 20.001397104084113,
+      "source_stamp_ns": 1766582179390758213,
+      "offset_from_first_odom_seconds": 206.759858181
+    }
+  },
+  "trigger_publications": 1,
+  "trigger_details": {
+    "condition": "cumulative_odom_xy_distance",
+    "threshold_m": 20.0,
+    "distance_m": 20.001397104084113,
+    "origin_xy": [
+      0.0,
+      0.0
+    ],
+    "position_xy": [
+      -7.822622783285053,
+      -2.9664073224623686
+    ],
+    "frame_id": "odom",
+    "child_frame_id": "base_link",
+    "source_stamp_ns": 1766582179390758213,
+    "samples": 10345,
+    "odom_topic": "/odom"
+  },
+  "event_id": "event_1795661340999095364_11603062477770_bunker_mini_1",
+  "event_status": "COMPLETED",
+  "recorded_counts": {
+    "/tf_static": 8,
+    "/imu/data_raw": 11999,
+    "/odom": 3002,
+    "/tf": 3002,
+    "/scan": 601
+  },
+  "recorded_odom_is_exact_contiguous_source_slice": true,
+  "window_seconds": 15,
+  "reset_service_verified": true
+}

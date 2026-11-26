@@ -7,3 +7,7 @@ __pycache__/
 
 /recorder.local.yaml
 /recorder.local.yaml.bak
+
+/bunker_distance_demo.local.yaml
+/bunker_distance_demo.local.yaml.bak
+/bunker_distance_bags/

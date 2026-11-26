@@ -1,0 +1,22 @@
+event_recorder:
+  ros__parameters:
+    pre_trigger_seconds: 5.0
+    post_trigger_seconds: 10.0
+    history_retention_seconds: 8.0
+    trigger_cooldown_seconds: 3.0
+    output_directory: bunker_distance_bags
+    storage_id: mcap
+    minimum_free_bytes: 1073741824
+    # All five topics exist in rosbag2_2025_12_24-21_12_52.
+    # Images / point clouds are omitted so the example focuses on trigger correctness.
+    topics: [/odom, /imu/data_raw, /scan, /tf]
+    types: [nav_msgs/msg/Odometry, sensor_msgs/msg/Imu, sensor_msgs/msg/LaserScan, tf2_msgs/msg/TFMessage]
+    reliability: [reliable, reliable, reliable, reliable]
+    durability: [volatile, volatile, volatile, volatile]
+    context_topics: [/tf_static]
+    context_types: [tf2_msgs/msg/TFMessage]
+    trigger_list: [bunker_mini]
+    default_trigger: bunker_mini
+    triggers:
+      bunker_mini:
+        topics: [/odom, /imu/data_raw, /scan, /tf, /tf_static]

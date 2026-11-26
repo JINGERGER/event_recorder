@@ -15,6 +15,8 @@ ament_target_dependencies(recorder rclcpp rosbag2_cpp rosbag2_storage std_msgs s
 target_link_libraries(recorder yaml-cpp)
 install(TARGETS recorder DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS web/web_gui.py DESTINATION lib/${PROJECT_NAME} RENAME web_gui)
+install(PROGRAMS examples/odom_distance_trigger.py DESTINATION lib/${PROJECT_NAME} RENAME odom_distance_trigger)
+install(FILES examples/distance_accumulator.py DESTINATION lib/${PROJECT_NAME})
 install(FILES web/gui_config.py DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY web/static DESTINATION share/${PROJECT_NAME}/web)
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME} PATTERN "__pycache__" EXCLUDE)
