@@ -1,0 +1,124 @@
+{
+  "platform": "x86_64",
+  "yaml_cpp": "0.7.0+dfsg-8build1",
+  "updates_per_mode": 5000,
+  "note": "Standalone accelerated lifetime reproducer; not an Orin sensor-load test. Separate processes, no ROS, no sleeps. Timings include snapshot construction and YAML emission.",
+  "runs": [
+    {
+      "mode": "shared",
+      "batch_size": 500,
+      "initial_rss_bytes": 3923968,
+      "batches": [
+        {
+          "updates": 500,
+          "seconds": 0.452644,
+          "rss_bytes": 11919360
+        },
+        {
+          "updates": 1000,
+          "seconds": 1.60837,
+          "rss_bytes": 19693568
+        },
+        {
+          "updates": 1500,
+          "seconds": 3.68733,
+          "rss_bytes": 27467776
+        },
+        {
+          "updates": 2000,
+          "seconds": 6.53405,
+          "rss_bytes": 35241984
+        },
+        {
+          "updates": 2500,
+          "seconds": 8.67377,
+          "rss_bytes": 43016192
+        },
+        {
+          "updates": 3000,
+          "seconds": 10.6451,
+          "rss_bytes": 50790400
+        },
+        {
+          "updates": 3500,
+          "seconds": 13.1689,
+          "rss_bytes": 58560512
+        },
+        {
+          "updates": 4000,
+          "seconds": 15.7956,
+          "rss_bytes": 66334720
+        },
+        {
+          "updates": 4500,
+          "seconds": 19.0622,
+          "rss_bytes": 74108928
+        },
+        {
+          "updates": 5000,
+          "seconds": 20.242,
+          "rss_bytes": 81879040
+        }
+      ],
+      "configuration_preserved": true
+    },
+    {
+      "mode": "clone",
+      "batch_size": 500,
+      "initial_rss_bytes": 3915776,
+      "batches": [
+        {
+          "updates": 500,
+          "seconds": 0.104627,
+          "rss_bytes": 4210688
+        },
+        {
+          "updates": 1000,
+          "seconds": 0.106836,
+          "rss_bytes": 4214784
+        },
+        {
+          "updates": 1500,
+          "seconds": 0.108225,
+          "rss_bytes": 4214784
+        },
+        {
+          "updates": 2000,
+          "seconds": 0.105556,
+          "rss_bytes": 4218880
+        },
+        {
+          "updates": 2500,
+          "seconds": 0.103947,
+          "rss_bytes": 4218880
+        },
+        {
+          "updates": 3000,
+          "seconds": 0.105771,
+          "rss_bytes": 4218880
+        },
+        {
+          "updates": 3500,
+          "seconds": 0.102545,
+          "rss_bytes": 4218880
+        },
+        {
+          "updates": 4000,
+          "seconds": 0.106299,
+          "rss_bytes": 4218880
+        },
+        {
+          "updates": 4500,
+          "seconds": 0.108373,
+          "rss_bytes": 4218880
+        },
+        {
+          "updates": 5000,
+          "seconds": 0.109215,
+          "rss_bytes": 4218880
+        }
+      ],
+      "configuration_preserved": true
+    }
+  ]
+}

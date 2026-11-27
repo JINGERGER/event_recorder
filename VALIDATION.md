@@ -99,3 +99,13 @@
 - 中英文桌面及 390px 手机布局检查通过；默认 go2 / bunker_mini / piper 的[英文截图](docs/gui-overview.en.png)与[中文截图](docs/gui-overview.png)已更新。
 
 本轮没有修改 recorder 核心，也没有重复完整 rosbag、距离样例和性能回归。原始浏览器截图及日志保存在本机 `validation/gui_i18n_20261126_final/`，默认配置截图运行记录位于 `validation/gui_i18n_20261126_preview/`。
+
+## 2026-11-27：状态配置快照内存池修复
+
+确认 `5262010` 的 `status["configuration"] = configuration_` 存在 yaml-cpp 内存池生命周期问题。改为 `YAML::Clone(configuration_)`，隔离每次状态快照；ROS 接口与配置值不变。
+
+- 本机 x86_64 / yaml-cpp 0.7.0，两个独立进程各执行 5000 次快照更新：直接赋值每 500 次耗时由 0.453 s 增至 20.242 s，RSS 由 3.74 MiB 增至 78.09 MiB；Clone 每批稳定在 0.103–0.109 s，最终 RSS 约 4.02 MiB。两模式序列化配置一致，Clone 的快照修改不会影响原配置。
+- `colcon build --packages-select event_recorder` 通过。真实 ROS + HTTP + Chrome 11 组回归通过，包含状态读取、触发/冷却、配置展示/保存/重启、双语切换与离线检测，无 JavaScript 错误。
+- 复现针对 YAML 节点生命周期，不是 Orin 或 67 MiB/s 双雷达/ZED 负载测试。本轮未重复完整 rosbag/距离样例回归；整机长跑仍待现场验证。
+
+详见[原因、复现与部署验证说明](docs/status-memory-fix.md)、[内存/耗时报告](reports/yaml_status_memory.json)、[修复后 GUI 回归](reports/gui_yaml_clone.json)。

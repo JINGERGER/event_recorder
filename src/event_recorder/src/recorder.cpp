@@ -442,7 +442,10 @@ class Recorder : public rclcpp::Node {
       status["input_drops"] = input_drops_.load(); status["trigger_rejections"] = trigger_drops_.load();
       status["output_directory"] = std::filesystem::absolute(output_).string();
       status["storage_id"] = storage_; status["default_trigger"] = yaml_string(default_rule_);
-      status["configuration"] = configuration_;
+      // Node assignment merges yaml-cpp memory pools. Sharing the long-lived
+      // configuration would retain every transient status tree and make later
+      // publishes progressively slower. Only merge an independent snapshot.
+      status["configuration"] = YAML::Clone(configuration_);
       YAML::Node rule_list(YAML::NodeType::Map);
       for (const auto & rule : rules_) {
         YAML::Node topics(YAML::NodeType::Sequence);
